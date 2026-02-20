@@ -148,35 +148,56 @@ class CoordinateTransformer:
         if len(coords) < 2:
             return []
 
-        # Build (x, z, elevation) for every original node
+        # Project every node; skip any with non-finite coordinates
         nodes_xze: List[Tuple[float, float, float]] = []
         for lon, lat in coords:
-            x, z = self._xz(lat, lon)
-            elev = elevations.get(
-                (round(lat, 6), round(lon, 6)), 0.0
-            )
+            try:
+                x, z = self._xz(float(lat), float(lon))
+            except (TypeError, ValueError):
+                continue
+            elev = elevations.get((round(lat, 6), round(lon, 6)), 0.0)
             nodes_xze.append((x, z, elev))
 
+        if len(nodes_xze) < 2:
+            return []
+
+        # Remove consecutive duplicate (x, z) pairs to avoid degenerate geometries
+        deduped = [nodes_xze[0]]
+        for pt in nodes_xze[1:]:
+            if (pt[0], pt[1]) != (deduped[-1][0], deduped[-1][1]):
+                deduped.append(pt)
+
+        if len(deduped) < 2:
+            return []
+
         # Clip the 2-D polyline
-        xz_line = LineString([(x, z) for x, z, _ in nodes_xze])
-        clipped = xz_line.intersection(self._clip_box)
+        try:
+            xz_line = LineString([(x, z) for x, z, _ in deduped])
+            clipped  = xz_line.intersection(self._clip_box)
+        except Exception:
+            return []
 
         if clipped.is_empty:
             return []
 
-        geoms = (
-            list(clipped.geoms)
-            if clipped.geom_type == "MultiLineString"
-            else [clipped]
-        )
+        # Normalise to a list of LineString geometries
+        if clipped.geom_type == "MultiLineString":
+            geoms = list(clipped.geoms)
+        elif clipped.geom_type == "LineString":
+            geoms = [clipped]
+        elif hasattr(clipped, "geoms"):
+            # GeometryCollection — keep only LineString members
+            geoms = [g for g in clipped.geoms if g.geom_type == "LineString"]
+        else:
+            return []
 
         results = []
         for geom in geoms:
-            if geom.geom_type != "LineString" or geom.is_empty:
+            if geom.is_empty:
                 continue
             seg = []
             for cx, cz in geom.coords:
-                elev = self._interp_elevation(cx, cz, nodes_xze)
+                elev = self._interp_elevation(cx, cz, deduped)
                 seg.append({"x": round(cx, 2), "y": round(elev, 2), "z": round(cz, 2)})
             if len(seg) >= 2:
                 results.append(seg)
@@ -203,10 +224,23 @@ class CoordinateTransformer:
         nodes_xze: List[Tuple[float, float, float]] = []
         xz_coords: List[Tuple[float, float]] = []
         for lon, lat in coords:
-            x, z = self._xz(lat, lon)
+            try:
+                x, z = self._xz(float(lat), float(lon))
+            except (TypeError, ValueError):
+                continue
             elev = elevations.get((round(lat, 6), round(lon, 6)), 0.0)
             nodes_xze.append((x, z, elev))
             xz_coords.append((x, z))
+
+        # Deduplicate consecutive identical points to avoid degenerate polygons
+        deduped_xz: List[Tuple[float, float]] = []
+        for pt in xz_coords:
+            if not deduped_xz or pt != deduped_xz[-1]:
+                deduped_xz.append(pt)
+        xz_coords = deduped_xz
+
+        if len(xz_coords) < 3:
+            return None
 
         try:
             poly    = Polygon(xz_coords)
@@ -252,6 +286,22 @@ class CoordinateTransformer:
 class CS2Converter:
     """Converts parsed OSM data to Cities: Skylines 2 mod format."""
 
+    # Default fares by route type.
+    # Used when OSM has no charge= tag.  All amounts are a sensible
+    # single-trip adult fare; the mod uses these to initialise CS2
+    # transit line ticket prices.
+    #
+    # Override per city by passing a fare_overrides dict to __init__:
+    #   {"bus": {"base_fare": 2.00, "currency": "GBP"}, ...}
+    TRANSIT_FARES: Dict[str, Dict] = {
+        "bus":        {"base_fare": 1.50, "day_pass": 5.00,  "currency": "EUR"},
+        "tram":       {"base_fare": 1.50, "day_pass": 5.00,  "currency": "EUR"},
+        "train":      {"base_fare": 3.50, "day_pass": 18.00, "currency": "EUR"},
+        "subway":     {"base_fare": 1.80, "day_pass": 7.00,  "currency": "EUR"},
+        "light_rail": {"base_fare": 1.80, "day_pass": 7.00,  "currency": "EUR"},
+        "ferry":      {"base_fare": 2.50, "day_pass": 10.00, "currency": "EUR"},
+    }
+
     # Road-type → CS2 prefab name
     ROAD_TYPE_MAP = {
         "motorway":   "Highway",
@@ -289,17 +339,26 @@ class CS2Converter:
         bbox: Tuple[float, float, float, float],
         elevation_data: Optional[Dict[Tuple[float, float], float]] = None,
         output_dir: str = "../data/processed",
+        fare_overrides: Optional[Dict[str, Dict]] = None,
     ):
         """
         Args:
             bbox:           (south, west, north, east) in decimal degrees.
             elevation_data: {(lat, lon): metres} from the elevation fetcher.
             output_dir:     Where to write JSON output files.
+            fare_overrides: Per-route-type fare overrides, e.g.
+                            {"bus": {"base_fare": 2.00, "currency": "GBP"}}.
+                            Merged on top of TRANSIT_FARES defaults.
         """
         self.transformer    = CoordinateTransformer(bbox)
         self.elevations     = elevation_data or {}
         self.output_dir     = output_dir
         os.makedirs(output_dir, exist_ok=True)
+
+        # Merge defaults with any city-specific overrides
+        self._fares: Dict[str, Dict] = {}
+        for rt, defaults in self.TRANSIT_FARES.items():
+            self._fares[rt] = {**defaults, **(fare_overrides or {}).get(rt, {})}
 
     # ------------------------------------------------------------------
     # Roads
@@ -421,40 +480,100 @@ class CS2Converter:
     def convert_transit(
         self, transit_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        cs2_stops  = []
-        cs2_routes = []
+        """
+        Convert stops and routes to CS2 format.
 
+        External stops (intercity route endpoints that lie outside the
+        map boundary) are pinned to the nearest point on the map edge so
+        the CS2 mod can place a visible "external connection" marker
+        rather than dropping the endpoint entirely.
+        """
+        cs2_stops:  List[Dict[str, Any]] = []
+        cs2_routes: List[Dict[str, Any]] = []
+
+        # ---- Stops -------------------------------------------------------
         for stop in transit_data["stops"]:
-            lon, lat = stop["coordinates"]
-            # Drop stops outside the CS2 map
-            if not self.transformer.in_bounds(lat, lon):
+            try:
+                lon, lat = stop["coordinates"]
+                lon, lat = float(lon), float(lat)
+            except (TypeError, ValueError, KeyError):
                 continue
-            elev = self.elevations.get((round(lat, 6), round(lon, 6)), 0.0)
+            elev   = self.elevations.get((round(lat, 6), round(lon, 6)), 0.0)
+            is_ext = stop.get("is_external", False)
+
+            if is_ext:
+                position = self._clamp_to_map_edge(lat, lon, elev)
+            else:
+                if not self.transformer.in_bounds(lat, lon):
+                    continue  # entirely outside — shouldn't happen after filtering
+                position = self.transformer.to_cs2(lat, lon, elev)
+
             cs2_stops.append({
-                "id":       f"stop_{stop['id']}",
-                "name":     stop["name"],
-                "type":     stop["type"],
-                "position": self.transformer.to_cs2(lat, lon, elev),
+                "id":            f"stop_{stop['id']}",
+                "name":          stop["name"],
+                "type":          stop["type"],
+                "position":      position,
+                "is_external":   is_ext,
+                "is_underground":stop.get("is_underground", False),
+                "has_shelter":   stop.get("has_shelter", False),
+                "has_bench":     stop.get("has_bench", False),
+                "wheelchair":    stop.get("wheelchair", "unknown"),
             })
 
-        stop_ids = {s["id"] for s in cs2_stops}
+        stop_id_set = {s["id"] for s in cs2_stops}
 
+        # ---- Routes ------------------------------------------------------
         for route in transit_data["routes"]:
+            route_type = route["route_type"]
+            cs2_type   = self.TRANSIT_TYPE_MAP.get(route_type, "BusLine")
+
+            # Ordered list of stop IDs that exist in our converted stop set
             route_stops = [
-                f"stop_{m['ref']}"
-                for m in route["members"]
-                if m["type"] == "node" and f"stop_{m['ref']}" in stop_ids
+                f"stop_{sid}"
+                for sid in route.get("stop_ids", [])
+                if f"stop_{sid}" in stop_id_set
             ]
+
+            # Fare: use OSM data if present, else defaults for this route type
+            osm_fare  = route.get("fare")
+            fare_defaults = self._fares.get(route_type, self._fares.get("bus", {}))
+            if osm_fare:
+                fare = {**fare_defaults, **osm_fare}
+            else:
+                fare = {**fare_defaults, "source": "default"}
+
             cs2_routes.append({
-                "id":       f"route_{route['id']}",
-                "name":     route["name"],
-                "number":   route["ref"],
-                "type":     self.TRANSIT_TYPE_MAP.get(route["route_type"], "BusLine"),
-                "operator": route["operator"],
-                "stops":    route_stops,
+                "id":          f"route_{route['id']}",
+                "name":        route["name"],
+                "number":      route["ref"],
+                "type":        cs2_type,
+                "operator":    route["operator"],
+                "colour":      route.get("colour", ""),
+                "network":     route.get("network", ""),
+                "from":        route.get("from", ""),
+                "to":          route.get("to", ""),
+                "is_intercity":route.get("is_intercity", False),
+                "stops":       route_stops,
+                "fare":        fare,
             })
 
         return {"stops": cs2_stops, "routes": cs2_routes}
+
+    def _clamp_to_map_edge(
+        self, lat: float, lon: float, elev: float
+    ) -> Dict[str, float]:
+        """
+        For external stops that lie beyond the CS2 map boundary, pin them
+        to the nearest point on the map edge at the same bearing.
+
+        This gives the CS2 mod a valid in-map anchor for route endpoints.
+        """
+        x, z    = self.transformer._xz(lat, lon)
+        half    = self.transformer.CS2_HALF_MAP
+        # Clamp to [-half, +half] in both axes
+        cx = max(-half, min(half, x))
+        cz = max(-half, min(half, z))
+        return {"x": round(cx, 2), "y": round(elev, 2), "z": round(cz, 2)}
 
     # ------------------------------------------------------------------
     # Spatial chunking

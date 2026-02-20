@@ -36,6 +36,12 @@ def main():
         "--no-elevation", action="store_true",
         help="Skip elevation fetching (use flat terrain)"
     )
+    parser.add_argument(
+        "--fare-config", type=str, default=None,
+        help="Path to a JSON file with per-route-type fare overrides. "
+             "Keys: bus, tram, train, subway, light_rail, ferry. "
+             'Values: {"base_fare": 2.00, "day_pass": 7.00, "currency": "GBP"}'
+    )
 
     args = parser.parse_args()
 
@@ -46,19 +52,34 @@ def main():
     # 1. Resolve bounding box
     # ----------------------------------------------------------------
     if args.bbox:
-        bbox      = tuple(map(float, args.bbox.split(",")))
+        try:
+            parts = [p.strip() for p in args.bbox.split(",")]
+            if len(parts) != 4:
+                print("ERROR: --bbox requires exactly 4 comma-separated values: south,west,north,east")
+                return
+            bbox = tuple(float(p) for p in parts)
+        except ValueError as e:
+            print(f"ERROR: --bbox contains a non-numeric value: {e}")
+            return
         city_name = args.output
     elif args.city:
         print(f"Looking up bounding box for '{args.city}'…")
         bbox = fetcher.fetch_city_bbox(args.city)
         if not bbox:
-            print(f"ERROR: Could not find city '{args.city}'.")
+            print(f"ERROR: Could not find city '{args.city}'. "
+                  "Try a more specific name or use --bbox.")
             return
         city_name = args.city
         print(f"  Bounding box: south={bbox[0]}, west={bbox[1]}, north={bbox[2]}, east={bbox[3]}")
         fetcher.save_bbox_cache(city_name, bbox)
     else:
         print("Please provide --city or --bbox.")
+        return
+
+    # Validate the bbox before doing any heavy fetching
+    err = fetcher.validate_bbox(bbox)
+    if err:
+        print(f"ERROR: Invalid bounding box — {err}")
         return
 
     features = [f.strip() for f in args.features.split(",")]
@@ -79,9 +100,14 @@ def main():
         parsed["roads"] = parser_obj.parse_roads(osm_data["roads"])
         print(f"  Roads:      {len(parsed['roads'])} segments")
 
+    # Build underground way ID set from railway data (used to filter tram routes)
+    underground_way_ids = set()
+
     if "railways" in osm_data:
         parsed["railways"] = parser_obj.parse_railways(osm_data["railways"])
-        print(f"  Railways:   {len(parsed['railways'])} segments")
+        underground_way_ids = parser_obj.get_underground_way_ids(osm_data["railways"])
+        print(f"  Railways:   {len(parsed['railways'])} segments "
+              f"({len(underground_way_ids)} underground way(s) detected)")
 
     if "waterways" in osm_data:
         parsed["waterways"] = parser_obj.parse_waterways(osm_data["waterways"])
@@ -90,9 +116,17 @@ def main():
         print(f"  Waterways:  {n_lines} linear, {n_areas} area features")
 
     if "transit" in osm_data:
-        parsed["transit"] = parser_obj.parse_transit_routes(osm_data["transit"])
-        print(f"  Transit stops:  {len(parsed['transit']['stops'])}")
-        print(f"  Transit routes: {len(parsed['transit']['routes'])}")
+        parsed["transit"] = parser_obj.parse_transit_routes(
+            osm_data["transit"],
+            underground_way_ids=underground_way_ids,
+            bbox=bbox,
+        )
+        stops  = parsed["transit"]["stops"]
+        routes = parsed["transit"]["routes"]
+        n_ext  = sum(1 for s in stops  if s.get("is_external"))
+        n_ic   = sum(1 for r in routes if r.get("is_intercity"))
+        print(f"  Transit stops:   {len(stops)}  ({n_ext} external/intercity endpoints)")
+        print(f"  Transit routes:  {len(routes)} ({n_ic} intercity)")
 
     # ----------------------------------------------------------------
     # 4. Fetch elevation
@@ -110,10 +144,22 @@ def main():
     # 5. Convert to CS2 format
     # ----------------------------------------------------------------
     print("\nConverting to CS2 format…")
+    # Load optional city-specific fare overrides
+    fare_overrides = None
+    if args.fare_config:
+        import json as _json
+        try:
+            with open(args.fare_config, encoding="utf-8") as f:
+                fare_overrides = _json.load(f)
+            print(f"  Loaded fare config from {args.fare_config}")
+        except (OSError, ValueError) as e:
+            print(f"  Warning: could not load fare config — {e}")
+
     converter = CS2Converter(
         bbox=bbox,
         elevation_data=elevation_data,
         output_dir="../data/processed",
+        fare_overrides=fare_overrides,
     )
 
     # Print coordinate system info
@@ -139,8 +185,14 @@ def main():
 
     if "transit" in parsed:
         cs2_data["transit"] = converter.convert_transit(parsed["transit"])
-        print(f"  Transit stops:   {len(cs2_data['transit']['stops'])}")
-        print(f"  Transit routes:  {len(cs2_data['transit']['routes'])}")
+        t = cs2_data["transit"]
+        n_bus  = sum(1 for r in t["routes"] if r["type"] == "BusLine")
+        n_tram = sum(1 for r in t["routes"] if r["type"] == "TramLine")
+        n_rail = sum(1 for r in t["routes"] if r["type"] in ("TrainLine", "SubwayLine", "MetroLine"))
+        n_ic   = sum(1 for r in t["routes"] if r.get("is_intercity"))
+        print(f"  Transit stops:   {len(t['stops'])}")
+        print(f"  Transit routes:  {len(t['routes'])} "
+              f"(bus={n_bus}, tram={n_tram}, rail={n_rail}, intercity={n_ic})")
 
     # Attach coordinate metadata to the full output
     cs2_data["_meta"] = {
@@ -160,12 +212,13 @@ def main():
     # 7. Save
     # ----------------------------------------------------------------
     print("\nSaving output…")
-    converter.save_to_file(cs2_data, f"{args.output}_full.json")
-    converter.save_to_file(chunks,   f"{args.output}_chunks.json")
+    safe_output = OSMFetcher._safe_filename(args.output)
+    converter.save_to_file(cs2_data, f"{safe_output}_full.json")
+    converter.save_to_file(chunks,   f"{safe_output}_chunks.json")
 
     print(f"\n✓ Done! Output written to data/processed/")
-    print(f"  {args.output}_full.json   — complete city data")
-    print(f"  {args.output}_chunks.json — {len(chunks)} spatial chunk(s)")
+    print(f"  {safe_output}_full.json   — complete city data")
+    print(f"  {safe_output}_chunks.json — {len(chunks)} spatial chunk(s)")
     print("\nNext step: load the CS2 mod and import the chunk file in-game.")
 
 

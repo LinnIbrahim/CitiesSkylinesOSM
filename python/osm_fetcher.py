@@ -4,8 +4,8 @@ Fetches OpenStreetMap data and elevation for a given city or bounding box.
 """
 
 import json
-import math
 import os
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -25,24 +25,78 @@ class OSMFetcher:
     # City bounding box
     # ------------------------------------------------------------------
 
-    def fetch_city_bbox(self, city_name: str) -> Optional[Tuple[float, float, float, float]]:
+    def fetch_city_bbox(
+        self, city_name: str
+    ) -> Optional[Tuple[float, float, float, float]]:
         """
         Look up a city's bounding box via Nominatim.
 
         Returns:
-            (south, west, north, east) or None if not found.
+            (south, west, north, east) or None on failure.
         """
-        url    = "https://nominatim.openstreetmap.org/search"
-        params = {"q": city_name, "format": "json", "limit": 1}
+        url     = "https://nominatim.openstreetmap.org/search"
+        params  = {"q": city_name, "format": "json", "limit": 1}
         headers = {"User-Agent": "MapToSkylines2/0.1"}
 
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
-        if resp.status_code == 200 and resp.json():
-            data = resp.json()[0]
-            bbox = data.get("boundingbox", [])
-            if len(bbox) == 4:
-                # Nominatim: [south, north, west, east]
-                return (float(bbox[0]), float(bbox[2]), float(bbox[1]), float(bbox[3]))
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            print(f"  Nominatim request failed: {e}")
+            return None
+        except ValueError as e:
+            print(f"  Nominatim returned invalid JSON: {e}")
+            return None
+
+        if not data:
+            return None
+
+        try:
+            bbox = data[0].get("boundingbox", [])
+            if len(bbox) != 4:
+                return None
+            # Nominatim order: [south, north, west, east]
+            south, north, west, east = (float(b) for b in bbox)
+            return (south, west, north, east)
+        except (ValueError, IndexError, KeyError) as e:
+            print(f"  Could not parse Nominatim bbox: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Bounding box validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def validate_bbox(
+        bbox: Tuple[float, float, float, float]
+    ) -> Optional[str]:
+        """
+        Validate a (south, west, north, east) bbox.
+
+        Returns an error string if invalid, or None if OK.
+        """
+        if len(bbox) != 4:
+            return "Bbox must have exactly 4 values (south, west, north, east)."
+        south, west, north, east = bbox
+
+        if not (-90 <= south <= 90 and -90 <= north <= 90):
+            return f"Latitude out of range: south={south}, north={north}."
+        if not (-180 <= west <= 180 and -180 <= east <= 180):
+            return f"Longitude out of range: west={west}, east={east}."
+        if south >= north:
+            return (
+                f"south ({south}) must be less than north ({north}). "
+                "Did you pass the bbox in the wrong order?"
+            )
+        if west > east:
+            # Could be antimeridian-crossing — warn but do not abort
+            print(
+                f"  Warning: west ({west}) > east ({east}). "
+                "This city crosses the antimeridian (e.g. Fiji, eastern Russia). "
+                "Coordinate projection will be inaccurate — consider splitting "
+                "the bbox at the antimeridian."
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -61,9 +115,6 @@ class OSMFetcher:
             bbox:     (south, west, north, east)
             features: Subset of ["roads", "railways", "waterways", "bus", "tram", "train"].
                       Defaults to all.
-
-        Returns:
-            Dict keyed by feature type.
         """
         if features is None:
             features = ["roads", "railways", "waterways", "bus", "tram", "train"]
@@ -122,12 +173,6 @@ class OSMFetcher:
         return self._query_with_retry(query)
 
     def _fetch_waterways(self, bbox_str: str) -> overpy.Result:
-        """
-        Fetch rivers, streams, canals, lakes, reservoirs, and coastline.
-
-        Linear features: waterway=river|stream|canal|drain|ditch|coastline
-        Area features:   natural=water, landuse=reservoir
-        """
         query = f"""
         [out:json][timeout:180];
         (
@@ -153,39 +198,62 @@ class OSMFetcher:
         if "train" in features: transport_types.extend(["train", "subway", "light_rail"])
 
         route_filter = "|".join(transport_types)
+
+        # Use "out body qt" (not "out skel qt") for the recursive member fetch.
+        # This ensures external stop nodes have their tags available for
+        # underground and stop-type detection.  For cities with hundreds of
+        # routes this produces a larger response but avoids silent data loss.
         query = f"""
         [out:json][timeout:180];
         (
-          node["public_transport"="stop_position"]({bbox_str});
+          node["railway"="tram_stop"]({bbox_str});
+          node["public_transport"="stop_position"]["bus"="yes"]({bbox_str});
+          node["public_transport"="stop_position"]["tram"="yes"]({bbox_str});
+          node["public_transport"="stop_position"]["train"="yes"]({bbox_str});
           node["highway"="bus_stop"]({bbox_str});
           relation["type"="route"]["route"~"{route_filter}"]({bbox_str});
         );
         out body;
         >;
-        out skel qt;
+        out body qt;
         """
         return self._query_with_retry(query)
 
     def _query_with_retry(
         self, query: str, max_retries: int = 3
     ) -> overpy.Result:
+        """
+        Execute an Overpass query with exponential-backoff retry.
+
+        Retries on:
+          - Rate-limit / gateway timeout responses from Overpass
+          - Transient network errors (ConnectionError, ChunkedEncodingError, …)
+        Non-retriable exceptions (e.g. query syntax errors) are re-raised
+        immediately.
+        """
+        RETRIABLE = (
+            overpy.exception.OverpassGatewayTimeout,
+            overpy.exception.OverpassTooManyRequests,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ReadTimeout,
+        )
+
         for attempt in range(max_retries):
             try:
                 print(f"  Attempt {attempt + 1}/{max_retries}...")
                 return self.api.query(query)
-            except (
-                overpy.exception.OverpassGatewayTimeout,
-                overpy.exception.OverpassTooManyRequests,
-            ):
+            except RETRIABLE as e:
                 if attempt < max_retries - 1:
-                    wait = (2 ** attempt) * 10
-                    print(f"  Rate-limited — waiting {wait}s...")
+                    wait = (2 ** attempt) * 10  # 10, 20, 40 s
+                    print(f"  Retryable error ({type(e).__name__}) — waiting {wait}s…")
                     time.sleep(wait)
                 else:
                     print("  Max retries reached.")
                     raise
-            except Exception as e:
-                print(f"  Error: {e}")
+            except Exception:
+                # Non-retriable (syntax error, data error, etc.) — fail fast
                 raise
 
     # ------------------------------------------------------------------
@@ -197,42 +265,37 @@ class OSMFetcher:
         coords: List[Tuple[float, float]],
     ) -> Dict[Tuple[float, float], float]:
         """
-        Fetch terrain elevation for a list of (lat, lon) coordinates.
+        Fetch terrain elevation (metres) for a list of (lat, lon) coordinates.
 
-        Uses OpenTopoData's free SRTM 30 m endpoint — no API key needed.
-        Results are cached on disk at data/osm/elevation_cache.json.
-
-        Elevation at clipped or interpolated geometry points is computed
-        by the CoordinateTransformer using nearest-neighbour weighting, so
-        every node with a known elevation contributes.
+        Uses the free OpenTopoData SRTM 30 m endpoint — no API key needed.
+        Results are cached on disk at <cache_dir>/elevation_cache.json.
+        Rate limit: 1 request per second, 100 locations per request.
 
         Args:
-            coords: List of (lat, lon) tuples.
+            coords: [(lat, lon), …]
 
         Returns:
-            Dict mapping (lat_rounded, lon_rounded) → elevation in metres.
+            {(lat_rounded, lon_rounded): elevation_metres}
         """
-        # Round to 6 decimal places (~0.1 m precision) for deduplication
         unique = list({(round(lat, 6), round(lon, 6)) for lat, lon in coords})
 
         if not unique:
             return {}
 
-        # Load on-disk cache
         cache_path = os.path.join(self.cache_dir, "elevation_cache.json")
         cache: Dict[str, float] = {}
         if os.path.exists(cache_path):
-            with open(cache_path, encoding="utf-8") as f:
-                cache = json.load(f)
+            try:
+                with open(cache_path, encoding="utf-8") as f:
+                    cache = json.load(f)
+            except (OSError, ValueError):
+                cache = {}
 
         def _key(lat: float, lon: float) -> str:
             return f"{lat},{lon}"
 
         to_fetch = [c for c in unique if _key(*c) not in cache]
 
-        # Cap at 2 000 unique points per run to stay within free-tier limits.
-        # For very large cities, a representative sample is already sufficient
-        # because the CS2 terrain system smooths height between nodes.
         MAX_POINTS = 2_000
         if len(to_fetch) > MAX_POINTS:
             print(
@@ -249,33 +312,39 @@ class OSMFetcher:
             )
             batch_size = 100
             for i in range(0, len(to_fetch), batch_size):
-                batch = to_fetch[i : i + batch_size]
+                batch     = to_fetch[i : i + batch_size]
                 locations = "|".join(f"{lat},{lon}" for lat, lon in batch)
-                url = f"https://api.opentopodata.org/v1/srtm30m?locations={locations}"
+                url       = f"https://api.opentopodata.org/v1/srtm30m?locations={locations}"
 
                 try:
                     resp = requests.get(url, timeout=30)
                     if resp.status_code == 200:
                         data = resp.json()
                         for result in data.get("results", []):
-                            loc   = result.get("location", {})
-                            elev  = result.get("elevation") or 0.0
-                            cache[_key(loc["lat"], loc["lng"])] = float(elev)
+                            try:
+                                loc  = result["location"]
+                                elev = result.get("elevation")
+                                # elevation=null means sea/ocean → treat as 0
+                                cache[_key(float(loc["lat"]), float(loc["lng"]))] = (
+                                    float(elev) if elev is not None else 0.0
+                                )
+                            except (KeyError, TypeError, ValueError):
+                                pass  # skip malformed individual result
                     else:
-                        print(f"  Elevation API returned {resp.status_code} — skipping batch.")
+                        print(f"  Elevation API {resp.status_code} — skipping batch.")
                 except requests.RequestException as e:
                     print(f"  Elevation fetch error: {e} — skipping batch.")
 
-                # Respect free-tier rate limit: 1 request / second
                 if i + batch_size < len(to_fetch):
-                    time.sleep(1.1)
+                    time.sleep(1.1)  # respect 1 req/s rate limit
 
-            # Persist updated cache
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(cache, f)
-            print(f"  Elevation cache saved ({len(cache)} entries).")
+            try:
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(cache, f)
+                print(f"  Elevation cache saved ({len(cache)} entries).")
+            except OSError as e:
+                print(f"  Warning: could not save elevation cache: {e}")
 
-        # Build result dict with tuple keys
         result: Dict[Tuple[float, float], float] = {}
         for lat, lon in unique:
             v = cache.get(_key(lat, lon))
@@ -285,17 +354,13 @@ class OSMFetcher:
         return result
 
     # ------------------------------------------------------------------
-    # Utility: collect all OSM node coordinates from parsed data
+    # Utility: collect all node coordinates from parsed data
     # ------------------------------------------------------------------
 
     @staticmethod
     def collect_coords(parsed_data: dict) -> List[Tuple[float, float]]:
         """
         Extract all unique (lat, lon) pairs from a parsed-data dict.
-
-        Accepts the dict produced by OSMParser (roads, railways,
-        waterways, transit), so the elevation fetcher can be called
-        with a single list covering every feature type.
         """
         coords: List[Tuple[float, float]] = []
 
@@ -315,10 +380,29 @@ class OSMFetcher:
         return coords
 
     # ------------------------------------------------------------------
-    # Cache helper (raw OSM not serialisable, kept as metadata only)
+    # File helpers
     # ------------------------------------------------------------------
 
-    def save_bbox_cache(self, city_name: str, bbox: Tuple[float, float, float, float]):
-        path = os.path.join(self.cache_dir, f"{city_name.replace(' ', '_')}_bbox.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"city": city_name, "bbox": bbox}, f)
+    @staticmethod
+    def _safe_filename(name: str) -> str:
+        """
+        Return a filesystem-safe version of a city/output name.
+        Replaces path separators, null bytes, and non-ASCII-printable chars
+        with underscores.
+        """
+        # Replace path separators and other problematic characters
+        safe = re.sub(r'[/\\:*?"<>|\x00]', "_", name)
+        # Collapse multiple consecutive underscores
+        safe = re.sub(r"_+", "_", safe)
+        return safe.strip("_") or "city"
+
+    def save_bbox_cache(
+        self, city_name: str, bbox: Tuple[float, float, float, float]
+    ):
+        safe = self._safe_filename(city_name.replace(" ", "_"))
+        path = os.path.join(self.cache_dir, f"{safe}_bbox.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"city": city_name, "bbox": bbox}, f)
+        except OSError as e:
+            print(f"  Warning: could not save bbox cache: {e}")
