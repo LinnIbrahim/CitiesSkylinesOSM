@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Data
+data/osm/*.json
+data/osm/*.osm
+data/processed/*.json
+
+# C#
+bin/
+obj/
+*.dll
+*.pdb
+*.user
+*.suo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,21 @@
+# OpenStreetMap data fetching
+overpy>=0.7
+osmapi>=3.0
+
+# Geospatial processing
+shapely>=2.0
+geopy>=2.3
+
+# Data handling
+pandas>=2.0
+numpy>=1.24
+
+# HTTP requests
+requests>=2.31
+
+# JSON/XML parsing
+xmltodict>=0.13
+
+# Optional: visualization for debugging
+# matplotlib>=3.7
+# folium>=0.14
