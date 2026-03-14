@@ -113,11 +113,11 @@ class OSMFetcher:
 
         Args:
             bbox:     (south, west, north, east)
-            features: Subset of ["roads", "railways", "waterways", "bus", "tram", "train"].
+            features: Subset of ["roads", "railways", "waterways", "bus", "tram", "train", "buildings"].
                       Defaults to all.
         """
         if features is None:
-            features = ["roads", "railways", "waterways", "bus", "tram", "train"]
+            features = ["roads", "railways", "waterways", "bus", "tram", "train", "buildings"]
 
         south, west, north, east = bbox
         bbox_str = f"{south},{west},{north},{east}"
@@ -141,6 +141,10 @@ class OSMFetcher:
         if any(f in features for f in ["bus", "tram", "train"]):
             print("Fetching public transport...")
             results["transit"] = self._fetch_public_transport(bbox_str, features)
+
+        if "buildings" in features:
+            print("Fetching buildings...")
+            results["buildings"] = self._fetch_buildings(bbox_str)
 
         return results
 
@@ -182,6 +186,18 @@ class OSMFetcher:
           way["landuse"="reservoir"]({bbox_str});
           relation["natural"="water"]({bbox_str});
           relation["landuse"="reservoir"]({bbox_str});
+        );
+        out body;
+        >;
+        out skel qt;
+        """
+        return self._query_with_retry(query)
+
+    def _fetch_buildings(self, bbox_str: str) -> overpy.Result:
+        query = f"""
+        [out:json][timeout:180];
+        (
+          way["building"]({bbox_str});
         );
         out body;
         >;
@@ -368,6 +384,7 @@ class OSMFetcher:
             parsed_data.get("roads", []),
             parsed_data.get("railways", []),
             parsed_data.get("waterways", []),
+            parsed_data.get("buildings", []),
         ]:
             for feature in feature_list:
                 for lon, lat in feature.get("coordinates", []):

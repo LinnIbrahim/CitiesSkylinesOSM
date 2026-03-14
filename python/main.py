@@ -21,7 +21,7 @@ def main():
     )
     parser.add_argument(
         "--features", type=str,
-        default="roads,railways,waterways,bus,tram,train",
+        default="roads,railways,waterways,bus,tram,train,buildings",
         help="Comma-separated features to fetch (default: all)"
     )
     parser.add_argument(
@@ -35,6 +35,10 @@ def main():
     parser.add_argument(
         "--no-elevation", action="store_true",
         help="Skip elevation fetching (use flat terrain)"
+    )
+    parser.add_argument(
+        "--simplify-tolerance", type=float, default=2.0,
+        help="Douglas-Peucker simplification tolerance in metres (0 = no simplification)"
     )
     parser.add_argument(
         "--fare-config", type=str, default=None,
@@ -128,6 +132,15 @@ def main():
         print(f"  Transit stops:   {len(stops)}  ({n_ext} external/intercity endpoints)")
         print(f"  Transit routes:  {len(routes)} ({n_ic} intercity)")
 
+    if "buildings" in osm_data:
+        parsed["buildings"] = parser_obj.parse_buildings(osm_data["buildings"])
+        zone_counts = {}
+        for b in parsed["buildings"]:
+            zone_counts[b["zone"]] = zone_counts.get(b["zone"], 0) + 1
+        print(f"  Buildings:  {len(parsed['buildings'])} total")
+        for zone, count in sorted(zone_counts.items()):
+            print(f"    {zone}: {count}")
+
     # ----------------------------------------------------------------
     # 4. Fetch elevation
     # ----------------------------------------------------------------
@@ -193,6 +206,17 @@ def main():
         print(f"  Transit stops:   {len(t['stops'])}")
         print(f"  Transit routes:  {len(t['routes'])} "
               f"(bus={n_bus}, tram={n_tram}, rail={n_rail}, intercity={n_ic})")
+
+    if "buildings" in parsed:
+        cs2_data["buildings"] = converter.convert_buildings(parsed["buildings"])
+        print(f"  Buildings converted: {len(cs2_data['buildings'])} footprints")
+
+    # ----------------------------------------------------------------
+    # 5b. Simplify geometry (Douglas-Peucker)
+    # ----------------------------------------------------------------
+    if args.simplify_tolerance > 0:
+        print(f"\nSimplifying geometry (tolerance={args.simplify_tolerance} m)…")
+        cs2_data = converter.simplify_all(cs2_data, tolerance=args.simplify_tolerance)
 
     # Attach coordinate metadata to the full output
     cs2_data["_meta"] = {

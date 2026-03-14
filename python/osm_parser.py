@@ -165,6 +165,109 @@ class OSMParser:
         return waterways
 
     # ------------------------------------------------------------------
+    # Buildings
+    # ------------------------------------------------------------------
+
+    # OSM building tag → CS2 zone category
+    BUILDING_ZONE_MAP = {
+        # Residential
+        "apartments":    "residential",
+        "house":         "residential",
+        "detached":      "residential",
+        "semidetached_house": "residential",
+        "terrace":       "residential",
+        "residential":   "residential",
+        "dormitory":     "residential",
+        # Commercial
+        "commercial":    "commercial",
+        "retail":        "commercial",
+        "supermarket":   "commercial",
+        "kiosk":         "commercial",
+        "hotel":         "commercial",
+        # Industrial
+        "industrial":    "industrial",
+        "warehouse":     "industrial",
+        "manufacture":   "industrial",
+        "factory":       "industrial",
+        # Office
+        "office":        "office",
+        # Civic / special
+        "church":        "civic",
+        "cathedral":     "civic",
+        "mosque":        "civic",
+        "temple":        "civic",
+        "synagogue":     "civic",
+        "school":        "civic",
+        "university":    "civic",
+        "hospital":      "civic",
+        "government":    "civic",
+        "public":        "civic",
+        "civic":         "civic",
+        "fire_station":  "civic",
+        "police":        "civic",
+        "train_station": "civic",
+    }
+
+    def parse_buildings(self, osm_result: overpy.Result) -> List[Dict[str, Any]]:
+        """
+        Parse building footprints from an OSM query result.
+
+        Each building is a closed polygon with metadata about height,
+        levels, and zone type.
+        """
+        buildings = []
+
+        for way in osm_result.ways:
+            tags   = way.tags
+            coords = self._safe_way_coords(way)
+
+            if len(coords) < 4:
+                continue
+
+            # Must be a closed polygon
+            if coords[0] != coords[-1]:
+                continue
+
+            building_type = tags.get("building", "yes")
+            zone = self.BUILDING_ZONE_MAP.get(building_type, "residential")
+
+            height = self._parse_building_height(tags)
+            levels = self._parse_building_levels(tags)
+
+            deduped = self._dedup_coords(coords)
+            if len(deduped) < 3:
+                continue
+
+            buildings.append({
+                "id":          way.id,
+                "type":        building_type,
+                "zone":        zone,
+                "name":        tags.get("name", ""),
+                "height":      height,
+                "levels":      levels,
+                "coordinates": coords,
+                "geometry":    Polygon(deduped),
+            })
+
+        return buildings
+
+    def _parse_building_height(self, tags: dict) -> Optional[float]:
+        raw = tags.get("height")
+        if raw is None:
+            return None
+        try:
+            return float(re.sub(r"[^\d.,]", "", str(raw)).replace(",", ".") or "0") or None
+        except ValueError:
+            return None
+
+    def _parse_building_levels(self, tags: dict) -> int:
+        raw = tags.get("building:levels", "")
+        try:
+            return max(1, int(re.split(r"[^0-9]", str(raw))[0]))
+        except (ValueError, IndexError):
+            return 1
+
+    # ------------------------------------------------------------------
     # Transit
     # ------------------------------------------------------------------
 

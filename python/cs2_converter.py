@@ -313,6 +313,15 @@ class CS2Converter:
         "service":    "TinyRoad",
     }
 
+    # Zone → CS2 zone type
+    ZONE_TYPE_MAP = {
+        "residential": "ResidentialZone",
+        "commercial":  "CommercialZone",
+        "industrial":  "IndustrialZone",
+        "office":      "OfficeZone",
+        "civic":       "CivicBuilding",
+    }
+
     # Transit-route-type → CS2 line type
     TRANSIT_TYPE_MAP = {
         "bus":        "BusLine",
@@ -474,6 +483,45 @@ class CS2Converter:
         return cs2_waterways
 
     # ------------------------------------------------------------------
+    # Buildings
+    # ------------------------------------------------------------------
+
+    def convert_buildings(
+        self, buildings: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert building footprints to CS2 format.
+
+        Each building becomes a closed polygon with height and zone info.
+        """
+        cs2_buildings = []
+
+        for bldg in buildings:
+            points = self.transformer.clip_and_convert_polygon(
+                bldg["coordinates"], self.elevations
+            )
+            if points is None:
+                continue
+
+            # Estimate height from levels if no explicit height
+            height = bldg.get("height")
+            levels = bldg.get("levels", 1)
+            if height is None:
+                height = levels * 3.0  # ~3 m per storey
+
+            cs2_buildings.append({
+                "id":       f"bldg_{bldg['id']}",
+                "type":     bldg["type"],
+                "zone":     self.ZONE_TYPE_MAP.get(bldg.get("zone", ""), "ResidentialZone"),
+                "name":     bldg["name"],
+                "height":   round(height, 1),
+                "levels":   levels,
+                "points":   points,
+            })
+
+        return cs2_buildings
+
+    # ------------------------------------------------------------------
     # Transit
     # ------------------------------------------------------------------
 
@@ -579,6 +627,113 @@ class CS2Converter:
     # Spatial chunking
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Road simplification (Douglas-Peucker)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def simplify_points(
+        points: List[Dict[str, float]],
+        tolerance: float = 2.0,
+    ) -> List[Dict[str, float]]:
+        """
+        Reduce the number of points in a polyline using Douglas-Peucker.
+
+        Args:
+            points:    List of {x, y, z} dicts.
+            tolerance: Max perpendicular distance (metres) to discard a point.
+                       2 m default is imperceptible in-game but cuts node count
+                       by 30-60 % on typical OSM roads.
+
+        Always keeps the first and last point.
+        """
+        if len(points) <= 2:
+            return points
+
+        coords_2d = [(p["x"], p["z"]) for p in points]
+        keep = CS2Converter._dp_mask(coords_2d, tolerance)
+        return [p for p, k in zip(points, keep) if k]
+
+    @staticmethod
+    def _dp_mask(coords: List[Tuple[float, float]], tol: float) -> List[bool]:
+        """Return a boolean mask of which indices to keep."""
+        n = len(coords)
+        keep = [False] * n
+        keep[0] = keep[-1] = True
+
+        stack = [(0, n - 1)]
+        while stack:
+            lo, hi = stack.pop()
+            if hi - lo < 2:
+                continue
+            ax, az = coords[lo]
+            bx, bz = coords[hi]
+            dx, dz = bx - ax, bz - az
+            seg_len_sq = dx * dx + dz * dz
+
+            max_dist = 0.0
+            max_idx = lo
+            for i in range(lo + 1, hi):
+                px, pz = coords[i]
+                if seg_len_sq == 0:
+                    dist = math.hypot(px - ax, pz - az)
+                else:
+                    t = max(0.0, min(1.0, ((px - ax) * dx + (pz - az) * dz) / seg_len_sq))
+                    proj_x = ax + t * dx
+                    proj_z = az + t * dz
+                    dist = math.hypot(px - proj_x, pz - proj_z)
+                if dist > max_dist:
+                    max_dist = dist
+                    max_idx = i
+
+            if max_dist > tol:
+                keep[max_idx] = True
+                stack.append((lo, max_idx))
+                stack.append((max_idx, hi))
+
+        return keep
+
+    def simplify_all(
+        self,
+        data: Dict[str, Any],
+        tolerance: float = 2.0,
+    ) -> Dict[str, Any]:
+        """
+        Apply Douglas-Peucker simplification to all line features in CS2 data.
+        Returns a new dict (does not mutate the input).
+        """
+        total_before = 0
+        total_after = 0
+
+        def _simplify_list(features: List[Dict], key: str = "points"):
+            nonlocal total_before, total_after
+            out = []
+            for feat in features:
+                pts = feat.get(key, [])
+                total_before += len(pts)
+                simplified = self.simplify_points(pts, tolerance)
+                total_after += len(simplified)
+                out.append({**feat, key: simplified})
+            return out
+
+        result = {**data}
+        if "roads" in result:
+            result["roads"] = _simplify_list(result["roads"])
+        if "railways" in result:
+            result["railways"] = _simplify_list(result["railways"])
+        if "waterways" in result:
+            result["waterways"] = _simplify_list(result["waterways"])
+
+        if total_before > 0:
+            pct = (1 - total_after / total_before) * 100
+            print(f"  Simplified: {total_before} → {total_after} points ({pct:.0f}% reduction)")
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Spatial chunking (improved — assigns to ALL overlapping cells)
+    # ------------------------------------------------------------------
+
     def create_chunks(
         self,
         data: Dict[str, Any],
@@ -590,6 +745,11 @@ class CS2Converter:
         Each chunk covers chunk_size_m × chunk_size_m metres in CS2 space.
         Only chunks that contain at least one feature are emitted.
 
+        Improvement over previous version: line features are assigned to
+        EVERY cell they pass through (based on bounding box of their points),
+        not just the cell of their first point. This prevents long roads
+        from disappearing when their starting chunk is unloaded.
+
         Args:
             data:         CS2-format city data (roads, railways, waterways, transit).
             chunk_size_m: Side length of each chunk in metres (default 5 km).
@@ -600,7 +760,6 @@ class CS2Converter:
         half = self.transformer.CS2_HALF_MAP
         n_cells = math.ceil(self.transformer.CS2_MAP_SIZE / chunk_size_m)
 
-        # Build a grid of empty chunks indexed by (col, row)
         chunks: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
         def _cell(x: float, z: float) -> Tuple[int, int]:
@@ -610,6 +769,20 @@ class CS2Converter:
                 max(0, min(col, n_cells - 1)),
                 max(0, min(row, n_cells - 1)),
             )
+
+        def _cells_for_points(points: List[Dict[str, float]]) -> set:
+            """Return set of (col, row) cells that the feature's bbox covers."""
+            if not points:
+                return set()
+            xs = [p["x"] for p in points]
+            zs = [p["z"] for p in points]
+            min_col, min_row = _cell(min(xs), min(zs))
+            max_col, max_row = _cell(max(xs), max(zs))
+            cells = set()
+            for c in range(min_col, max_col + 1):
+                for r in range(min_row, max_row + 1):
+                    cells.add((c, r))
+            return cells
 
         def _get_chunk(col: int, row: int) -> Dict[str, Any]:
             if (col, row) not in chunks:
@@ -626,36 +799,35 @@ class CS2Converter:
                     "roads":      [],
                     "railways":   [],
                     "waterways":  [],
+                    "buildings":  [],
                     "transit":    {"stops": [], "routes": []},
                 }
             return chunks[(col, row)]
 
-        # Assign roads by their first point's cell
+        # Assign line/polygon features to every cell their bbox overlaps
         for road in data.get("roads", []):
-            if road["points"]:
-                pt = road["points"][0]
-                chunk = _get_chunk(*_cell(pt["x"], pt["z"]))
-                chunk["roads"].append(road)
+            for cell in _cells_for_points(road.get("points", [])):
+                _get_chunk(*cell)["roads"].append(road)
 
         for rail in data.get("railways", []):
-            if rail["points"]:
-                pt = rail["points"][0]
-                chunk = _get_chunk(*_cell(pt["x"], pt["z"]))
-                chunk["railways"].append(rail)
+            for cell in _cells_for_points(rail.get("points", [])):
+                _get_chunk(*cell)["railways"].append(rail)
 
         for ww in data.get("waterways", []):
-            if ww["points"]:
-                pt = ww["points"][0]
-                chunk = _get_chunk(*_cell(pt["x"], pt["z"]))
-                chunk["waterways"].append(ww)
+            for cell in _cells_for_points(ww.get("points", [])):
+                _get_chunk(*cell)["waterways"].append(ww)
 
+        for bldg in data.get("buildings", []):
+            for cell in _cells_for_points(bldg.get("points", [])):
+                _get_chunk(*cell)["buildings"].append(bldg)
+
+        # Point features (stops) go to exactly one cell
         for stop in data.get("transit", {}).get("stops", []):
             pos = stop["position"]
             chunk = _get_chunk(*_cell(pos["x"], pos["z"]))
             chunk["transit"]["stops"].append(stop)
 
-        # Routes are not spatial — put them all in every chunk that has at
-        # least one of their stops.
+        # Routes go to every chunk that has at least one of their stops
         routes = data.get("transit", {}).get("routes", [])
         stop_to_chunk: Dict[str, Tuple[int, int]] = {}
         for (col, row), chunk in chunks.items():
