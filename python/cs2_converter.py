@@ -492,7 +492,8 @@ class CS2Converter:
         """
         Convert building footprints to CS2 format.
 
-        Each building becomes a closed polygon with height and zone info.
+        Each building becomes a closed polygon with height, zone, density,
+        and CS2 subtype for prefab matching.
         """
         cs2_buildings = []
 
@@ -510,13 +511,18 @@ class CS2Converter:
                 height = levels * 3.0  # ~3 m per storey
 
             cs2_buildings.append({
-                "id":       f"bldg_{bldg['id']}",
-                "type":     bldg["type"],
-                "zone":     self.ZONE_TYPE_MAP.get(bldg.get("zone", ""), "ResidentialZone"),
-                "name":     bldg["name"],
-                "height":   round(height, 1),
-                "levels":   levels,
-                "points":   points,
+                "id":          f"bldg_{bldg['id']}",
+                "type":        bldg["type"],
+                "zone":        self.ZONE_TYPE_MAP.get(bldg.get("zone", ""), "ResidentialZone"),
+                "density":     bldg.get("density", "low"),
+                "cs2_subtype": bldg.get("cs2_subtype", "LowDensityResidential"),
+                "name":        bldg["name"],
+                "height":      round(height, 1),
+                "levels":      levels,
+                "material":    bldg.get("material", ""),
+                "roof_shape":  bldg.get("roof_shape", ""),
+                "colour":      bldg.get("colour", ""),
+                "points":      points,
             })
 
         return cs2_buildings

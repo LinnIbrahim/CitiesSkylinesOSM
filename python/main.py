@@ -134,12 +134,13 @@ def main():
 
     if "buildings" in osm_data:
         parsed["buildings"] = parser_obj.parse_buildings(osm_data["buildings"])
-        zone_counts = {}
+        density_counts = {}
         for b in parsed["buildings"]:
-            zone_counts[b["zone"]] = zone_counts.get(b["zone"], 0) + 1
+            key = f"{b['density']} {b['zone']}"
+            density_counts[key] = density_counts.get(key, 0) + 1
         print(f"  Buildings:  {len(parsed['buildings'])} total")
-        for zone, count in sorted(zone_counts.items()):
-            print(f"    {zone}: {count}")
+        for key, count in sorted(density_counts.items(), key=lambda x: -x[1]):
+            print(f"    {key}: {count}")
 
     # ----------------------------------------------------------------
     # 4. Fetch elevation

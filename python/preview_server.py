@@ -130,8 +130,13 @@ def cs2_to_geojson(cs2_data):
                 "id": bldg.get("id", ""),
                 "name": bldg.get("name", ""),
                 "zone": bldg.get("zone", ""),
+                "density": bldg.get("density", ""),
+                "cs2_subtype": bldg.get("cs2_subtype", ""),
                 "height": bldg.get("height", 0),
                 "levels": bldg.get("levels", 0),
+                "material": bldg.get("material", ""),
+                "roof_shape": bldg.get("roof_shape", ""),
+                "colour": bldg.get("colour", ""),
             },
         })
 
@@ -319,6 +324,21 @@ function render() {
         const cfg = LAYER_CONFIG[layer] || {};
         statsHTML += `<div class="stat"><span class="label">${cfg.label || layer}</span><span class="value">${count.toLocaleString()}</span></div>`;
     });
+    // Building density breakdown
+    const bldgFeatures = DATA.features.filter(f => f.properties.layer === 'buildings');
+    if (bldgFeatures.length > 0) {
+        const densityCounts = {};
+        const subtypeCounts = {};
+        bldgFeatures.forEach(f => {
+            const d = f.properties.density || 'unknown';
+            const z = f.properties.zone || 'unknown';
+            densityCounts[d + ' ' + z.replace('Zone','').replace('Building','')] = (densityCounts[d + ' ' + z.replace('Zone','').replace('Building','')] || 0) + 1;
+        });
+        statsHTML += '<div style="font-size:11px;color:#888;margin-top:4px">Buildings by type:</div>';
+        Object.entries(densityCounts).sort((a,b) => b[1]-a[1]).forEach(([k, v]) => {
+            statsHTML += `<div class="stat"><span class="label" style="font-size:11px">${k}</span><span class="value" style="font-size:11px">${v}</span></div>`;
+        });
+    }
     statsHTML += `<div class="stat"><span class="label">Routes</span><span class="value">${(DATA._routes || []).length}</span></div>`;
     statsDiv.innerHTML = statsHTML;
 
@@ -364,14 +384,32 @@ function render() {
             const cfg = LAYER_CONFIG[layer] || {};
             let fillColor = cfg.color;
             if (layer === 'buildings') {
-                const ZONE_COLORS = {
-                    ResidentialZone: '#27ae60',
-                    CommercialZone:  '#3498db',
-                    IndustrialZone:  '#e67e22',
-                    OfficeZone:      '#9b59b6',
-                    CivicBuilding:   '#e74c3c',
+                // Color by zone + density for clear visual differentiation
+                const density = f.properties.density || 'low';
+                const zone = f.properties.zone || '';
+                const BLDG_COLORS = {
+                    // Residential: green spectrum (light→dark by density)
+                    'ResidentialZone_low':    '#a8e6a3',
+                    'ResidentialZone_medium': '#4caf50',
+                    'ResidentialZone_high':   '#1b5e20',
+                    // Commercial: blue spectrum
+                    'CommercialZone_low':     '#90caf9',
+                    'CommercialZone_medium':  '#2196f3',
+                    'CommercialZone_high':    '#0d47a1',
+                    // Industrial: orange spectrum
+                    'IndustrialZone_low':     '#ffcc80',
+                    'IndustrialZone_medium':  '#ff9800',
+                    'IndustrialZone_high':    '#e65100',
+                    // Office: purple spectrum
+                    'OfficeZone_low':         '#ce93d8',
+                    'OfficeZone_medium':      '#9c27b0',
+                    'OfficeZone_high':        '#4a148c',
+                    // Civic: red
+                    'CivicBuilding_low':      '#ef9a9a',
+                    'CivicBuilding_medium':   '#e53935',
+                    'CivicBuilding_high':     '#b71c1c',
                 };
-                fillColor = ZONE_COLORS[f.properties.zone] || '#9b59b6';
+                fillColor = BLDG_COLORS[zone + '_' + density] || '#9e9e9e';
             }
             leafletLayer = L.polygon(coords, {
                 color: fillColor,

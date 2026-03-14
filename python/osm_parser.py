@@ -178,17 +178,30 @@ class OSMParser:
         "terrace":       "residential",
         "residential":   "residential",
         "dormitory":     "residential",
+        "bungalow":      "residential",
+        "cabin":         "residential",
+        "farm":          "residential",
+        "houseboat":     "residential",
+        "static_caravan": "residential",
         # Commercial
         "commercial":    "commercial",
         "retail":        "commercial",
         "supermarket":   "commercial",
         "kiosk":         "commercial",
         "hotel":         "commercial",
+        "restaurant":    "commercial",
+        "cafe":          "commercial",
+        "fast_food":     "commercial",
+        "shop":          "commercial",
+        "mall":          "commercial",
         # Industrial
         "industrial":    "industrial",
         "warehouse":     "industrial",
         "manufacture":   "industrial",
         "factory":       "industrial",
+        "hangar":        "industrial",
+        "storage_tank":  "industrial",
+        "silo":          "industrial",
         # Office
         "office":        "office",
         # Civic / special
@@ -197,8 +210,11 @@ class OSMParser:
         "mosque":        "civic",
         "temple":        "civic",
         "synagogue":     "civic",
+        "chapel":        "civic",
         "school":        "civic",
         "university":    "civic",
+        "kindergarten":  "civic",
+        "college":       "civic",
         "hospital":      "civic",
         "government":    "civic",
         "public":        "civic",
@@ -206,14 +222,36 @@ class OSMParser:
         "fire_station":  "civic",
         "police":        "civic",
         "train_station": "civic",
+        "transportation":"civic",
+        "museum":        "civic",
+        "library":       "civic",
+        "theatre":       "civic",
+        "stadium":       "civic",
+        "sports_hall":   "civic",
+        "swimming_pool": "civic",
     }
+
+    # Types that are inherently low-density regardless of levels
+    _LOW_DENSITY_TYPES = frozenset({
+        "house", "detached", "semidetached_house", "bungalow",
+        "cabin", "farm", "static_caravan", "houseboat",
+        "terrace", "kiosk",
+    })
+
+    # Types that are inherently high-density
+    _HIGH_DENSITY_TYPES = frozenset({
+        "apartments", "dormitory", "hotel", "mall",
+    })
 
     def parse_buildings(self, osm_result: overpy.Result) -> List[Dict[str, Any]]:
         """
         Parse building footprints from an OSM query result.
 
-        Each building is a closed polygon with metadata about height,
-        levels, and zone type.
+        Each building gets rich metadata:
+        - zone: residential / commercial / industrial / office / civic
+        - density: low / medium / high (based on levels, footprint, type)
+        - cs2_subtype: specific CS2 building category
+        - material, roof_shape, colour for visual matching
         """
         buildings = []
 
@@ -224,7 +262,6 @@ class OSMParser:
             if len(coords) < 4:
                 continue
 
-            # Must be a closed polygon
             if coords[0] != coords[-1]:
                 continue
 
@@ -238,18 +275,178 @@ class OSMParser:
             if len(deduped) < 3:
                 continue
 
+            poly = Polygon(deduped)
+            footprint_area = poly.area  # in degree^2, relative is fine for classification
+
+            density = self._classify_density(building_type, levels, height, footprint_area)
+            cs2_subtype = self._classify_cs2_subtype(building_type, zone, density, levels, tags)
+
             buildings.append({
-                "id":          way.id,
-                "type":        building_type,
-                "zone":        zone,
-                "name":        tags.get("name", ""),
-                "height":      height,
-                "levels":      levels,
-                "coordinates": coords,
-                "geometry":    Polygon(deduped),
+                "id":            way.id,
+                "type":          building_type,
+                "zone":          zone,
+                "density":       density,
+                "cs2_subtype":   cs2_subtype,
+                "name":          tags.get("name", ""),
+                "height":        height,
+                "levels":        levels,
+                "material":      tags.get("building:material", ""),
+                "roof_shape":    tags.get("roof:shape", ""),
+                "colour":        tags.get("building:colour", tags.get("building:color", "")),
+                "amenity":       tags.get("amenity", ""),
+                "shop":          tags.get("shop", ""),
+                "coordinates":   coords,
+                "geometry":      poly,
             })
 
         return buildings
+
+    def _classify_density(
+        self,
+        building_type: str,
+        levels: int,
+        height: Optional[float],
+        footprint_area: float,
+    ) -> str:
+        """
+        Determine density tier: low / medium / high.
+
+        Logic:
+          - Explicit low-density types (house, detached, etc.) → low
+          - Explicit high-density types (apartments, hotel, etc.) → high
+          - Otherwise use levels: 1-3 = low, 4-6 = medium, 7+ = high
+          - If no level data, estimate from height: <12m = low, <21m = med, else high
+        """
+        if building_type in self._LOW_DENSITY_TYPES:
+            return "low"
+        if building_type in self._HIGH_DENSITY_TYPES:
+            # Even apartments can be low-rise
+            if levels <= 3 and (height is None or height < 12):
+                return "medium"
+            return "high"
+
+        if levels > 1:
+            if levels <= 3:
+                return "low"
+            if levels <= 6:
+                return "medium"
+            return "high"
+
+        if height is not None:
+            if height < 12:
+                return "low"
+            if height < 21:
+                return "medium"
+            return "high"
+
+        return "low"
+
+    def _classify_cs2_subtype(
+        self,
+        building_type: str,
+        zone: str,
+        density: str,
+        levels: int,
+        tags: dict,
+    ) -> str:
+        """
+        Map to a specific CS2 building subtype for prefab matching.
+
+        Returns a string like "LowDensityResidential", "HighDensityCommercial",
+        "School", "Hospital", etc.
+        """
+        # Civic buildings get specific subtypes
+        if zone == "civic":
+            civic_map = {
+                "school":        "School",
+                "university":    "University",
+                "college":       "University",
+                "kindergarten":  "School",
+                "hospital":      "Hospital",
+                "fire_station":  "FireStation",
+                "police":        "PoliceStation",
+                "church":        "Church",
+                "cathedral":     "Church",
+                "mosque":        "Church",
+                "temple":        "Church",
+                "synagogue":     "Church",
+                "chapel":        "Church",
+                "museum":        "Museum",
+                "library":       "Library",
+                "theatre":       "Theatre",
+                "stadium":       "Stadium",
+                "sports_hall":   "Stadium",
+                "government":    "CityHall",
+                "train_station": "TransportHub",
+                "transportation":"TransportHub",
+            }
+            subtype = civic_map.get(building_type)
+            if subtype:
+                return subtype
+
+            # Check amenity tag for civic buildings tagged building=yes
+            amenity = tags.get("amenity", "")
+            amenity_map = {
+                "school":        "School",
+                "university":    "University",
+                "college":       "University",
+                "kindergarten":  "School",
+                "hospital":      "Hospital",
+                "clinic":        "Hospital",
+                "fire_station":  "FireStation",
+                "police":        "PoliceStation",
+                "library":       "Library",
+                "theatre":       "Theatre",
+                "community_centre": "CivicBuilding",
+                "townhall":      "CityHall",
+                "place_of_worship": "Church",
+            }
+            if amenity in amenity_map:
+                return amenity_map[amenity]
+
+            return "CivicBuilding"
+
+        # Zone-based density subtypes
+        density_prefix = {"low": "LowDensity", "medium": "MediumDensity", "high": "HighDensity"}
+        prefix = density_prefix.get(density, "LowDensity")
+
+        zone_suffix = {
+            "residential": "Residential",
+            "commercial":  "Commercial",
+            "industrial":  "Industrial",
+            "office":      "Office",
+        }
+        suffix = zone_suffix.get(zone, "Residential")
+
+        # Special cases within zones
+        if zone == "residential":
+            if building_type in ("detached", "house", "bungalow"):
+                return f"{prefix}DetachedHouse"
+            if building_type in ("semidetached_house",):
+                return f"{prefix}SemiDetached"
+            if building_type in ("terrace",):
+                return f"{prefix}RowHouse"
+            if building_type == "apartments":
+                return f"{prefix}Apartment"
+            return f"{prefix}{suffix}"
+
+        if zone == "commercial":
+            if building_type in ("hotel",):
+                return f"{prefix}Hotel"
+            if building_type in ("supermarket", "mall"):
+                return f"{prefix}ShoppingCenter"
+            if building_type in ("restaurant", "cafe", "fast_food"):
+                return f"{prefix}Restaurant"
+            return f"{prefix}{suffix}"
+
+        if zone == "industrial":
+            if building_type in ("warehouse",):
+                return f"{prefix}Warehouse"
+            if building_type in ("factory", "manufacture"):
+                return f"{prefix}Factory"
+            return f"{prefix}{suffix}"
+
+        return f"{prefix}{suffix}"
 
     def _parse_building_height(self, tags: dict) -> Optional[float]:
         raw = tags.get("height")
