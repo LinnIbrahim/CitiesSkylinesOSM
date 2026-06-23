@@ -92,5 +92,7 @@ python python/preview_server.py      # auto-finds the latest *_full.json
 
 ## Status
 
-🚧 In Development - MVP Phase
-# CitiesSkylinesOSM
+🚧 In Development — Phase 2: Python pipeline complete, CS2 mod loader in progress.
+
+See [ROADMAP.md](ROADMAP.md) for the full plan and [docs/PROGRESS.md](docs/PROGRESS.md)
+for the latest progress report.

@@ -169,7 +169,8 @@ class TestConvertRoads:
         cs2_roads = converter.convert_roads(roads)
         assert cs2_roads[0]["speedLimit"] == 96  # 60 * 1.609
 
-    def test_unknown_road_type_defaults(self, converter):
+    def test_unknown_road_type_uses_lane_count(self, converter):
+        # No type hint → classification falls back to the lane ladder (1 → Tiny).
         roads = [{
             "id": 3, "type": "unknown_type", "name": "",
             "coordinates": [(7.42, 43.73), (7.43, 43.74)],
@@ -177,7 +178,61 @@ class TestConvertRoads:
             "priority": 0, "geometry": None,
         }]
         cs2_roads = converter.convert_roads(roads)
-        assert cs2_roads[0]["type"] == "SmallRoad"  # default
+        assert cs2_roads[0]["type"] == "TinyRoad"
+
+
+def _road(road_type, lanes, **extra):
+    base = {
+        "id": 99, "type": road_type, "name": "", "lanes": lanes,
+        "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+        "oneway": False, "maxspeed": "", "priority": 0, "geometry": None,
+    }
+    base.update(extra)
+    return base
+
+
+class TestClassifyRoad:
+    def test_pedestrian_routes_to_pathway(self, converter):
+        out = converter.classify_road(_road("footway", 1))
+        assert out["type"] == "Pathway"
+        assert out["category"] == "pedestrian"
+
+    def test_alley(self, converter):
+        assert converter.classify_road(_road("alley", 1))["type"] == "Alley"
+
+    def test_surface_lane_ladder(self, converter):
+        assert converter.classify_road(_road("residential", 2))["type"] == "SmallRoad"
+        assert converter.classify_road(_road("secondary", 4))["type"] == "MediumRoad"
+        assert converter.classify_road(_road("secondary", 5))["type"] == "LargeRoad"
+
+    def test_clamp_above_five_lanes(self, converter):
+        out = converter.classify_road(_road("primary", 8))
+        assert out["type"] == "LargeRoad"
+        assert out["lanes"] == 5
+        assert out["clamped"] is True
+        assert out["original_lanes"] == 8
+
+    def test_texas_freeway_clamps(self, converter):
+        # I-10 Katy Freeway scale: 12 mainlanes → clamp to Highway, flagged.
+        out = converter.classify_road(_road("motorway", 12))
+        assert out["type"] == "Highway"
+        assert out["lanes"] == 5
+        assert out["clamped"] is True
+        assert out["original_lanes"] == 12
+
+    def test_class_hint_beats_narrow_lane_count(self, converter):
+        # A primary tagged with only 1 lane should not collapse to TinyRoad.
+        assert converter.classify_road(_road("primary", 1))["type"] == "LargeRoad"
+
+    def test_ref_and_colour_emitted(self, converter):
+        out = converter.convert_roads([_road("motorway", 3, ref="A12")])
+        assert out[0]["ref"] == "A12"
+        assert out[0]["ref_colour"] == "#0B5FA5"
+
+    def test_clamped_flag_in_output(self, converter):
+        out = converter.convert_roads([_road("primary", 9)])
+        assert out[0]["clamped"] is True
+        assert out[0]["original_lanes"] == 9
 
 
 # ---------------------------------------------------------------

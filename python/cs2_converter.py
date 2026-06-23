@@ -322,6 +322,30 @@ class CS2Converter:
         "service":    "TinyRoad",
     }
 
+    # Pedestrian / non-vehicle OSM classes route to a CS2 pathway, not a road.
+    PEDESTRIAN_OSM_TYPES = {
+        "footway", "path", "pedestrian", "steps", "cycleway",
+        "bridleway", "corridor", "track",
+    }
+
+    # Surface-road ladder: smallest CS2 type whose lane budget covers the count.
+    # Vanilla CS2 tops out at a 5-lane large road, so anything wider is clamped.
+    MAX_SURFACE_LANES = 5
+    SURFACE_LANE_LADDER = [
+        (1, "TinyRoad"),
+        (2, "SmallRoad"),
+        (4, "MediumRoad"),
+        (5, "LargeRoad"),
+    ]
+
+    # Class-based shield colour for numbered routes (ref like "A12", "N15").
+    # EU-leaning defaults; rendering/themes can override.
+    REF_COLOUR = {
+        "motorway": "#0B5FA5",  # blue (EU motorway signage)
+        "trunk":    "#1A7A3D",  # green (national trunk)
+        "primary":  "#D4A017",  # amber (primary route)
+    }
+
     # Zone → CS2 zone type
     ZONE_TYPE_MAP = {
         "residential": "ResidentialZone",
@@ -396,23 +420,91 @@ class CS2Converter:
         cs2_roads = []
 
         for road in roads:
+            klass = self.classify_road(road)
             segments = self.transformer.clip_and_convert_line(
                 road["coordinates"], self.elevations
             )
             for idx, seg in enumerate(segments):
                 seg_id = f"road_{road['id']}" if len(segments) == 1 else f"road_{road['id']}_{idx}"
-                cs2_roads.append({
-                    "id":         seg_id,
-                    "type":       self.ROAD_TYPE_MAP.get(road["type"], "SmallRoad"),
-                    "name":       road["name"],
-                    "points":     seg,
-                    "lanes":      road["lanes"],
-                    "oneWay":     road["oneway"],
-                    "speedLimit": self._parse_speed(road["maxspeed"]),
-                    "priority":   road["priority"],
-                })
+                entry = {
+                    "id":            seg_id,
+                    "type":          klass["type"],
+                    "category":      klass["category"],
+                    "name":          road["name"],
+                    "points":        seg,
+                    "lanes":         klass["lanes"],
+                    "width":         road.get("width_m"),
+                    "oneWay":        road["oneway"],
+                    "speedLimit":    self._parse_speed(road["maxspeed"]),
+                    "priority":      road["priority"],
+                }
+                if klass["clamped"]:
+                    entry["clamped"] = True
+                    entry["original_lanes"] = klass["original_lanes"]
+                ref = road.get("ref")
+                if ref:
+                    entry["ref"] = ref
+                    colour = self.REF_COLOUR.get(road["type"])
+                    if colour:
+                        entry["ref_colour"] = colour
+                cs2_roads.append(entry)
 
         return cs2_roads
+
+    def classify_road(self, road: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Choose the CS2 road type from the OSM class, lane count and width.
+
+        Returns a dict with:
+          type            CS2 road/pathway type
+          category        "vehicle" | "pedestrian"
+          lanes           effective lane count (clamped for surface roads)
+          clamped         True if lanes exceeded the vanilla CS2 ceiling
+          original_lanes  the pre-clamp lane count (only meaningful if clamped)
+        """
+        osm_type = road["type"]
+        lanes    = road.get("lanes", 2)
+
+        # Pedestrian / non-vehicle ways become CS2 pathways.
+        if osm_type in self.PEDESTRIAN_OSM_TYPES:
+            return {"type": "Pathway", "category": "pedestrian",
+                    "lanes": 1, "clamped": False, "original_lanes": lanes}
+
+        if osm_type == "alley":
+            return {"type": "Alley", "category": "vehicle",
+                    "lanes": 1, "clamped": False, "original_lanes": lanes}
+
+        # Motorway-grade roads use the dedicated Highway type. Lanes still clamp.
+        if osm_type in ("motorway", "trunk"):
+            clamped = lanes > self.MAX_SURFACE_LANES
+            return {"type": "Highway", "category": "vehicle",
+                    "lanes": min(lanes, self.MAX_SURFACE_LANES),
+                    "clamped": clamped, "original_lanes": lanes}
+
+        # Surface roads: pick the narrowest ladder type that fits, clamp at max.
+        clamped = lanes > self.MAX_SURFACE_LANES
+        eff = min(lanes, self.MAX_SURFACE_LANES)
+        cs2_type = self.SURFACE_LANE_LADDER[-1][1]
+        for threshold, name in self.SURFACE_LANE_LADDER:
+            if eff <= threshold:
+                cs2_type = name
+                break
+
+        # Respect the legacy class hint when it is wider than the lane-derived
+        # type (e.g. a sparsely-tagged primary should not collapse to TinyRoad).
+        hint = self.ROAD_TYPE_MAP.get(osm_type)
+        if hint and self._road_rank(hint) > self._road_rank(cs2_type):
+            cs2_type = hint
+
+        return {"type": cs2_type, "category": "vehicle", "lanes": eff,
+                "clamped": clamped, "original_lanes": lanes}
+
+    # Width ordering of CS2 surface road types, for "widest wins" comparisons.
+    _ROAD_RANK = ["Alley", "TinyRoad", "SmallRoad", "MediumRoad",
+                  "LargeRoad", "Highway"]
+
+    def _road_rank(self, cs2_type: str) -> int:
+        return self._ROAD_RANK.index(cs2_type) if cs2_type in self._ROAD_RANK else 0
 
     # ------------------------------------------------------------------
     # Railways

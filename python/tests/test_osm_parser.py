@@ -107,6 +107,73 @@ class TestParseRoads:
         roads = parser.parse_roads(result)
         assert roads[0]["lanes"] == 2  # takes first number
 
+    def test_captures_ref(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(105, nodes, {"highway": "motorway", "ref": "A12"})
+        result = _mock_result(ways=[way])
+
+        assert parser.parse_roads(result)[0]["ref"] == "A12"
+
+    def test_width_from_explicit_tag(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(106, nodes, {"highway": "primary", "width": "18 m"})
+        result = _mock_result(ways=[way])
+
+        assert parser.parse_roads(result)[0]["width_m"] == 18.0
+
+    def test_width_estimated_from_lanes(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(107, nodes, {"highway": "residential", "lanes": "2"})
+        result = _mock_result(ways=[way])
+
+        # 2 lanes × 3.0 m residential, no shoulder
+        assert parser.parse_roads(result)[0]["width_m"] == 6.0
+
+    def test_motorway_width_includes_shoulders(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(108, nodes, {"highway": "motorway", "lanes": "3"})
+        result = _mock_result(ways=[way])
+
+        # 3 × 3.66 + 6 m shoulders = 16.98, rounded to 1 dp
+        assert parser.parse_roads(result)[0]["width_m"] == 17.0
+
+    def test_service_alley(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(109, nodes, {"highway": "service", "service": "alley"})
+        result = _mock_result(ways=[way])
+
+        assert parser.parse_roads(result)[0]["type"] == "alley"
+
+
+class TestNameTypeHints:
+    def test_dutch_footpath(self, parser):
+        # "voetweg" literally = footpath; untagged way falls back to the name.
+        assert parser.infer_type_from_name("Oude Voetweg") == "footway"
+
+    def test_alley_token(self, parser):
+        assert parser.infer_type_from_name("Lange Steeg") == "alley"
+
+    def test_street_token(self, parser):
+        assert parser.infer_type_from_name("Kerkstraat") == "residential"
+
+    def test_no_hint(self, parser):
+        assert parser.infer_type_from_name("Grand Place") is None
+
+    def test_name_fills_missing_tag(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(110, nodes, {"name": "Smalle Voetweg"})  # no highway tag
+        result = _mock_result(ways=[way])
+
+        assert parser.parse_roads(result)[0]["type"] == "footway"
+
+    def test_name_does_not_override_explicit_tag(self, parser):
+        # A primary road named "...straat" stays primary, not residential.
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(111, nodes, {"highway": "primary", "name": "Grote Straat"})
+        result = _mock_result(ways=[way])
+
+        assert parser.parse_roads(result)[0]["type"] == "primary"
+
 
 # ---------------------------------------------------------------
 # parse_railways

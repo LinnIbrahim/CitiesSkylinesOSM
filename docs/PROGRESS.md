@@ -1,7 +1,7 @@
 # Project Progress Report
 
-**Last Updated**: 2026-02-19
-**Status**: Phase 1 Complete - Python Pipeline Working
+**Last Updated**: 2026-06-23
+**Status**: Phase 2 — Python pipeline complete, CS2 mod loader started
 
 ---
 
@@ -9,254 +9,117 @@
 
 ### Phase 1: Python Data Pipeline (DONE)
 
-#### 1. Project Structure
-- Created modular Python package
-- Set up data directories (osm/, processed/)
-- Created mod placeholder structure
-- Added .gitignore and documentation
+- Modular Python package (`fetcher → parser → converter`) orchestrated by a
+  shared `pipeline.generate_city_data` used by both the CLI and the web server.
+- OSM fetch via Overpass + Nominatim city lookup, with retry/backoff and rate
+  limit handling.
+- Parsing of roads, railways, transit (bus/tram/train), waterways and buildings.
+- CS2 conversion: road/railway/transit type mapping, building footprint
+  conversion, JSON export.
 
-#### 2. OSM Data Fetcher (`osm_fetcher.py`)
-- ✅ Implemented Overpass API integration
-- ✅ City lookup via Nominatim
-- ✅ Bounding box fetching
-- ✅ Road network queries
-- ✅ Railway network queries
-- ✅ Public transit queries (bus, tram, train)
-- ✅ Retry logic with exponential backoff
-- ✅ Rate limit handling
-- ⚠️  Caching mechanism (placeholder - not implemented)
+### Phase 2: Core Functionality (Python side DONE)
 
-#### 3. OSM Parser (`osm_parser.py`)
-- ✅ Road segment parsing with properties:
-  - Road type (motorway, primary, secondary, etc.)
-  - Name, lanes, speed limit
-  - One-way detection
-  - Coordinate arrays
-- ✅ Railway parsing (rail, tram, subway, light_rail)
-- ✅ Transit stop parsing
-- ✅ Transit route parsing with members
+#### Coordinate system
+- Proper Lat/Lon → CS2 conversion via a **local tangent plane** centred on the
+  selection (1:1 real-world metres, X/Z ground plane, Y = elevation).
+- Cities larger than the CS2 map (57 344 m) are **clipped** at the map edge
+  using Shapely intersection.
 
-#### 4. CS2 Converter (`cs2_converter.py`)
-- ✅ Road type mapping (OSM → CS2)
-- ✅ Railway type mapping
-- ✅ Transit type mapping
-- ✅ Coordinate transformation (simplified)
-- ✅ Chunking system (single chunk for now)
-- ✅ JSON export
+#### Terrain
+- Elevation sampled from **OpenTopoData SRTM 30 m**, batched and cached to
+  `data/osm/elevation_cache.json`.
 
-#### 5. Main CLI (`main.py`)
-- ✅ Command-line interface
-- ✅ City name or bbox input
-- ✅ Feature selection
-- ✅ Progress reporting
-- ✅ Error handling
+#### Waterways
+- Rivers, streams, canals, lakes, reservoirs and coastline, with area polygons
+  flagged via `isArea`.
 
-### Testing Results
+#### Buildings
+- Footprint extraction with height/levels estimation, zone + **density**
+  classification, **CS2 subtype** for prefab matching, plus material, roof
+  shape and colour metadata.
 
-#### Monaco Test (2026-02-19)
-```bash
-python3 main.py --city "Monaco" --features "roads,railways"
-```
+#### Road classification
+- Effective width estimated from explicit OSM `width` or `lanes × per-class
+  lane width` (+ shoulders for motorway-grade roads).
+- CS2 type chosen by lane count, **clamped to the vanilla 5-lane ceiling** with
+  a `clamped`/`original_lanes` flag so oversized roads (e.g. Texas freeways)
+  degrade honestly instead of silently.
+- Multilingual **name hints** (e.g. Dutch *voetweg* → footpath, *steeg* →
+  alley) fill missing/generic tags; footways/alleys route to a CS2 pathway.
+- Numbered-route **refs** (A12, N15) carried through with a class-based shield
+  colour.
 
-**Results**:
-- ✅ Bounding box: (43.5165358, 7.4090279, 43.7519173, 7.5329917)
-- ✅ Fetched 1,552 road segments
-- ✅ Fetched 11 railway segments
-- ✅ Generated monaco_test_full.json (1.4 MB)
-- ✅ Generated monaco_test_chunks.json (1.7 MB)
-- ⚠️  Transit routes skipped (rate limiting)
+#### European theme
+- Every asset tagged with its EU prefab (`eu_prefab`), right-hand `traffic_side`,
+  and a temperate terrain/climate/vegetation profile. `--theme none` produces
+  region-neutral output.
 
-**Sample Output**:
-```json
-{
-  "id": "road_4097656",
-  "type": "MediumRoad",
-  "name": "Avenue Princesse Alice",
-  "points": [...],
-  "lanes": 2,
-  "oneWay": false,
-  "speedLimit": 50,
-  "priority": 2
-}
-```
+#### Chunking
+- Grid-based spatial chunking (configurable cell size) producing
+  `selection_chunks.json` with per-chunk bounds and feature lists.
+
+#### Interactive web generator
+- `generate_server.py` serves a browser UI: drag a CS2-map-sized box over live
+  OpenStreetMap, click **Generate**, and the converted roads/transit/buildings
+  are drawn straight back on the map. `preview_server.py` re-renders the latest
+  result.
+
+### Tooling
+- Unit test suite across fetcher, parser, converter, eu_assets, pipeline and
+  both servers (`python/tests`).
+- GitHub Actions CI pipeline.
 
 ---
 
 ## 🚧 In Progress
 
-### CS2 Mod Development
-- Placeholder structure created
-- Plugin.cs stub written
-- Data structures defined
-- **BLOCKED**: Need CS2 SDK/API documentation
+### CS2 Mod (`mod/DynamicCityLoader`)
+Migrated off the BepInEx stub onto the **official PDX `IMod` framework**
+(see [CS2_MODDING_RESEARCH.md](CS2_MODDING_RESEARCH.md)). Implemented:
+
+- `Mod.cs` — `IMod` entry point registering the builder system.
+- `CityData.cs` — C# data models matching the exact JSON export schema
+  (roads, railways, waterways, buildings, transit, chunks, meta).
+- `CityDataLoader.cs` — JSON deserialization of full + chunked exports.
+- `ChunkManager.cs` — camera-distance based load/unload bookkeeping.
+- `CityBuilderSystem.cs` — `GameSystemBase` scaffold that resolves prefabs and
+  drives network/building creation.
+
+**Boundary**: the actual ECS network creation (roads are placed via tool
+systems / `ApplyNetSystem`, not direct entity creation) is scaffolded with
+documented integration points and needs an installed CS2 SDK to compile/run.
 
 ---
 
-## ⚠️ Known Issues
+## ⚠️ Known Issues / Open Questions
 
-### Critical
-1. **Coordinate Transformation**: Currently using naive multiplication
-   - Need proper Mercator projection
-   - Need CS2 coordinate system documentation
-   - Y-axis (elevation) always set to 0
-
-2. **CS2 Mod API**: Unknown
-   - No access to CS2 modding SDK yet
-   - Don't know CS2 road creation API
-   - Don't know transit system API
-   - BepInEx compatibility unclear
-
-### Non-Critical
-3. **Rate Limiting**: Overpass API rate limits
-   - Added retry logic (works)
-   - Added delays between requests (helps)
-   - Transit queries still hit limits on repeated runs
-   - **Solution**: Wait 5-10 minutes between runs
-
-4. **SSL Warning**: urllib3 with LibreSSL
-   - Not breaking functionality
-   - Cosmetic warning only
-   - Can ignore or upgrade OpenSSL
-
-5. **Caching**: Not implemented
-   - Would help with rate limiting
-   - Would speed up development
-   - Low priority for MVP
-
-### Minor
-6. **Chunking**: Too simplistic
-   - Currently creates single chunk
-   - Need spatial grid-based chunking
-   - Need LOD (Level of Detail) system
-
-7. **Road Type Mapping**: Approximated
-   - OSM types → CS2 types is guesswork
-   - Need to verify against actual CS2 road types
-   - May need adjustment after testing in-game
-
----
-
-## 📊 Statistics
-
-### Code Written
-- **Python**: ~600 lines
-  - osm_fetcher.py: ~160 lines
-  - osm_parser.py: ~160 lines
-  - cs2_converter.py: ~180 lines
-  - main.py: ~100 lines
-
-- **C#**: ~150 lines (stub only)
-  - Plugin.cs: ~150 lines (placeholders)
-
-- **Documentation**: ~400 lines
-  - README.md
-  - ROADMAP.md
-  - Multiple READMEs
-
-### Dependencies
-- Python packages: 8 (overpy, osmapi, shapely, geopy, pandas, numpy, requests, xmltodict)
-- C# packages: TBD (need BepInEx, CS2 SDK)
-
-### Test Data
-- Cities tested: Monaco (1)
-- Roads extracted: 1,552
-- Railways extracted: 11
-- File size: ~3 MB total
+- **Road placement API** — must go through tool/definition systems, not
+  `EntityManager.CreateEntity`. Approach documented; not yet wired to the game.
+- **Prefab name mapping** — `eu_prefab` strings need verification against the
+  real CS2 prefab catalogue.
+- **Transit routes** — Overpass rate-limits repeated runs; longer waits or a
+  local Overpass instance help.
+- **Chunk LOD** — chunks exist but no level-of-detail simplification yet.
 
 ---
 
 ## 🎯 Next Priorities
 
-### Immediate (Next Session)
-1. **Research CS2 Modding**
-   - Find CS2 SDK documentation
-   - Study existing CS2 mods
-   - Understand road creation API
-   - Determine BepInEx compatibility
-
-2. **Fix Coordinate Transform**
-   - Research CS2 coordinate system
-   - Implement proper Mercator projection
-   - Test with known landmarks
-
-3. **Test Larger City**
-   - Try San Francisco or Amsterdam
-   - Test chunking with more data
-   - Verify scaling
-
-### Short Term
-4. Implement proper chunking algorithm
-5. Add elevation data
-6. Get transit routes working (wait for rate limit)
-7. Set up C# project properly
-
-### Medium Term
-8. Build basic road spawner in CS2
-9. Test single chunk loading
-10. Iterate on coordinate mapping
+1. Install CS2 SDK locally; get `DynamicCityLoader.csproj` building against game
+   assemblies.
+2. Implement road network creation through the tool-system flow for a single
+   chunk.
+3. Verify `eu_prefab` names against the in-game prefab catalogue.
+4. Wire `ChunkManager` to camera position for dynamic load/unload.
+5. Add LOD simplification for distant chunks.
 
 ---
 
-## 🔬 Research Needed
+## 🔬 Research Status
 
-### Critical Research
-- [ ] CS2 coordinate system and scale
-- [ ] CS2 road prefab types and names
-- [ ] CS2 modding SDK location/installation
-- [ ] BepInEx 5 vs 6 for CS2
-- [ ] CS2 transit system API
-
-### Nice to Have
-- [ ] CS2 elevation/terrain API
-- [ ] CS2 building placement API
-- [ ] Maximum city size limits
-- [ ] Performance benchmarks
-- [ ] Existing map import mods
-
----
-
-## 💡 Lessons Learned
-
-1. **Start Small**: Monaco was perfect test size
-2. **Rate Limits**: OSM Overpass API needs careful handling
-3. **Incremental**: Building pipeline in stages worked well
-4. **Modular**: Separate fetcher/parser/converter is clean
-5. **Python First**: Good to validate data pipeline before mod development
-
----
-
-## 🎓 Technical Decisions
-
-### Why Python for Processing?
-- Rich geospatial libraries (shapely, geopy)
-- Easy OSM integration
-- Fast iteration
-- Separate from game engine
-
-### Why BepInEx for Mod?
-- Standard for CS2 modding (assumed)
-- Harmony patching support
-- Community support
-
-### Why JSON for Data?
-- Human readable
-- Easy to debug
-- Simple C# deserialization
-- Manageable file sizes
-
-### Why Chunking?
-- CS2 performance issues
-- Dynamic loading reduces memory
-- Enables large cities
-- LOD optimization potential
-
----
-
-## 📝 Notes for Future
-
-- Transit routes work but need longer waits due to rate limiting
-- Could use local Overpass instance to avoid limits
-- Might want to add progress bars for large cities
-- Consider parallel chunk processing
-- May need to simplify road networks (reduce nodes)
-- Consider adding road elevation from terrain data
+CS2 modding framework, ECS network/building/transit components, prefab creation
+and key open-source references are documented in
+[CS2_MODDING_RESEARCH.md](CS2_MODDING_RESEARCH.md). Remaining unknowns: exact
+prefab catalogue names and tool-system call sequence for batch road creation.
+</content>
+</invoke>

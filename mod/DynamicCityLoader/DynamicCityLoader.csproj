@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Cities: Skylines II PDX modding template.
+    Requires the official toolchain installed (sets the CSII_TOOLPATH user env
+    var). See docs/CS2_MODDING_RESEARCH.md for setup.
+  -->
+  <PropertyGroup>
+    <Configurations>Debug;Release</Configurations>
+  </PropertyGroup>
+
+  <Import Project="$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH', 'EnvironmentVariableTarget.User'))\Mod.props"
+          Condition="Exists('$([System.Environment]::GetEnvironmentVariable(`CSII_TOOLPATH`, `EnvironmentVariableTarget.User`))\Mod.props')" />
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <RootNamespace>DynamicCityLoader</RootNamespace>
+    <AssemblyName>DynamicCityLoader</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    Game + Colossal + Unity assemblies are resolved from the game's
+    Cities2_Data/Managed folder by Mod.props/Mod.targets. Newtonsoft.Json ships
+    with the game, so it is referenced from the managed folder rather than NuGet.
+  -->
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Import Project="$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH', 'EnvironmentVariableTarget.User'))\Mod.targets"
+          Condition="Exists('$([System.Environment]::GetEnvironmentVariable(`CSII_TOOLPATH`, `EnvironmentVariableTarget.User`))\Mod.targets')" />
+
+</Project>

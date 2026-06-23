@@ -13,6 +13,38 @@ from shapely.geometry import LineString, Point, Polygon
 class OSMParser:
     """Parses OSM data into structured road, railway, waterway, and transit networks."""
 
+    # Approximate carriageway lane width (metres) by road class. US/EU practice:
+    # motorways ~3.66 m (12 ft), arterials a touch narrower, service roads tight.
+    LANE_WIDTH_M = {
+        "motorway":    3.66,
+        "trunk":       3.66,
+        "primary":     3.5,
+        "secondary":   3.3,
+        "tertiary":    3.0,
+        "residential": 3.0,
+        "service":     2.75,
+        "alley":       2.75,
+    }
+    DEFAULT_LANE_WIDTH = 3.0
+
+    # Street-name generics that reveal the road class when the OSM tag is missing
+    # or generic. Germanic/Nordic langs put the type as a compound *suffix*
+    # (voetweg, -steeg, -straat); Romance langs as a leading *word* (rue, via).
+    # Tokens are matched most-specific first; see infer_type_from_name. We only
+    # ever use these to fill gaps or to *demote* to footway/alley — never to
+    # promote something to a motorway from its name alone.
+    NAME_TYPE_HINTS = [
+        # (osm_type, [tokens])  -- order matters: specific before generic
+        ("footway", ["voetweg", "voetpad", "wandelpad", "sentier", "sentiero",
+                     "footpath", "footway", " walk", "promenade", "stig"]),
+        ("alley",   ["steeg", "gasse", "impasse", "ruelle", "vicolo",
+                     "callejon", "callejón", " alley", "gränd"]),
+        ("primary", ["autoweg", "snelweg", "autoroute", "autostrada",
+                     "autopista", "autobahn", "motorway"]),  # capped to primary
+        ("residential", ["straat", "straße", "strasse", "rue ", "via ",
+                         "calle ", " street", "gata", "gate "]),
+    ]
+
     def __init__(self):
         self.road_hierarchy = {
             "motorway":   5,
@@ -22,6 +54,10 @@ class OSMParser:
             "tertiary":   1,
             "residential":0,
             "service":    0,
+            "alley":      0,
+            "footway":    0,
+            "path":       0,
+            "pedestrian": 0,
         }
 
     # ------------------------------------------------------------------
@@ -33,18 +69,23 @@ class OSMParser:
         roads = []
 
         for way in osm_result.ways:
-            road_type = way.tags.get("highway", "unknown")
-            coords    = self._safe_way_coords(way)
+            coords = self._safe_way_coords(way)
 
             if len(coords) < 2:
                 continue
+
+            name      = way.tags.get("name", "")
+            road_type = self._resolve_road_type(way.tags, name)
+            lanes     = self._parse_lanes(way.tags)
 
             roads.append({
                 "id":          way.id,
                 "type":        road_type,
                 "priority":    self.road_hierarchy.get(road_type, 0),
-                "name":        way.tags.get("name", ""),
-                "lanes":       self._parse_lanes(way.tags),
+                "name":        name,
+                "ref":         way.tags.get("ref", ""),
+                "lanes":       lanes,
+                "width_m":     self._estimate_width(way.tags, road_type, lanes),
                 "oneway":      way.tags.get("oneway") == "yes",
                 "maxspeed":    way.tags.get("maxspeed", ""),
                 "coordinates": coords,
@@ -52,6 +93,60 @@ class OSMParser:
             })
 
         return roads
+
+    def _resolve_road_type(self, tags: dict, name: str) -> str:
+        """
+        Decide the road class from the OSM tag, falling back to / refining with
+        a name-based hint. The `highway` tag is authoritative; name hints only
+        fill gaps or demote a generic way to footway/alley.
+        """
+        osm_type = tags.get("highway")
+        if tags.get("service") == "alley":
+            return "alley"
+
+        hint = self.infer_type_from_name(name)
+
+        # No usable tag → trust the name hint (capped: never invents motorways).
+        if osm_type in (None, "", "unknown", "road", "unclassified"):
+            return hint or osm_type or "unknown"
+
+        # Tagged but generic, and the name clearly says pedestrian/alley → demote.
+        if hint in ("footway", "alley") and osm_type in ("service", "track", "path"):
+            return hint
+
+        return osm_type
+
+    def infer_type_from_name(self, name: str) -> Optional[str]:
+        """Return an OSM road class guessed from a street name, or None."""
+        if not name:
+            return None
+        low = name.strip().lower()
+        padded = f" {low} "
+        for osm_type, tokens in self.NAME_TYPE_HINTS:
+            for tok in tokens:
+                t = tok.lower()
+                # Tokens carrying a leading/trailing space are matched as whole
+                # words (Romance/English); bare tokens are compound suffixes
+                # (Germanic/Nordic) matched as substrings.
+                if (t in padded) if (t != t.strip()) else (t in low):
+                    return osm_type
+        return None
+
+    def _estimate_width(self, tags: dict, road_type: str, lanes: int) -> float:
+        """
+        Effective carriageway width in metres. Prefer an explicit OSM `width`,
+        otherwise estimate from lane count × per-class lane width, adding
+        shoulders for motorway-grade roads.
+        """
+        explicit = self._parse_width(tags)
+        if explicit:
+            return explicit
+
+        lane_w = self.LANE_WIDTH_M.get(road_type, self.DEFAULT_LANE_WIDTH)
+        width  = lanes * lane_w
+        if road_type in ("motorway", "trunk"):
+            width += 6.0  # ~3 m hard shoulder each side
+        return round(width, 1)
 
     # ------------------------------------------------------------------
     # Railways

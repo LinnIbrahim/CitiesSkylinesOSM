@@ -17,6 +17,11 @@
 - [x] Waterways: rivers, streams, canals, lakes, reservoirs, coastline
 - [x] Clipping: cities larger than 57 344 m use Shapely intersection to clip at map edge
 - [x] Refine road type mapping to CS2 equivalents
+- [x] Lane-width estimation + lane-count road classification (clamped to the
+      vanilla 5-lane ceiling, flagged when exceeded — e.g. Texas freeways)
+- [x] Name-based class hints (multilingual, e.g. Dutch *voetweg* → footpath) and
+      pedestrian/alley routing to a CS2 pathway
+- [x] Numbered-route refs (A12, N15) with class-based shield colour
 - [x] Create spatial chunking algorithm (grid-based, configurable cell size)
 - [x] European asset theme (roads, railways, buildings, transit, terrain/climate)
 - [x] Interactive web generator: drag a CS2-map-sized box over OSM, Generate on demand

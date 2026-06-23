@@ -1,53 +1,44 @@
-# DynamicCityLoader - CS2 Mod
+# DynamicCityLoader — CS2 Mod
 
-Dynamic city loading mod for Cities: Skylines 2.
+Dynamic city-loading mod for Cities: Skylines II. Loads the JSON city exports
+produced by the Python pipeline and realises them in-game, chunk by chunk, to
+work around CS2's performance limits on large networks.
 
-## Overview
+Built on the **official PDX modding framework** (`Game.Modding.IMod`) — see
+[../../docs/CS2_MODDING_RESEARCH.md](../../docs/CS2_MODDING_RESEARCH.md).
 
-This mod enables dynamic loading of city data exported from OpenStreetMap, handling the data in chunks to work around CS2's performance limitations.
+## Structure
 
-## Features
-
-- Load city data from JSON files
-- Dynamic chunk-based loading (LOD system)
-- Road network generation
-- Railway/metro placement
-- Public transit route creation
+| File | Responsibility |
+|------|----------------|
+| `Mod.cs` | `IMod` entry point; registers `CityBuilderSystem`, resolves data dir. |
+| `CityData.cs` | Data models matching the Python JSON export schema. |
+| `CityDataLoader.cs` | Deserializes the full + chunked exports. |
+| `ChunkManager.cs` | Camera-distance based load/unload bookkeeping. |
+| `Systems/CityBuilderSystem.cs` | `GameSystemBase` that resolves prefabs and realises chunks. |
 
 ## Installation
 
-1. Install BepInEx for Cities: Skylines 2
-2. Copy `DynamicCityLoader.dll` to `BepInEx/plugins/`
-3. Place city data JSON files in `BepInEx/plugins/DynamicCityLoader/data/`
-4. Launch CS2
-
-## Usage
-
-In-game, use the mod menu to:
-1. Select a city data file
-2. Configure loading settings (chunk distance, detail level)
-3. Load the city
-
-## Development
-
-This mod requires:
-- Cities: Skylines 2
-- BepInEx 5.x or 6.x
-- .NET SDK for building
-
-### Building
-
-```bash
-dotnet build
-```
+1. Build with the CS2 toolchain (sets `CSII_TOOLPATH`):
+   ```bash
+   dotnet build -c Release
+   ```
+2. The build deploys `DynamicCityLoader.dll` to
+   `%LOCALAPPDATA%Low\Colossal Order\Cities Skylines II\Mods\`.
+3. Place the pipeline output (`selection_chunks.json` / `selection_full.json`)
+   in the mod's `data/` subfolder.
+4. Launch CS2 and load/start a city.
 
 ## Status
 
-🚧 In Development - Stub/Placeholder
-Need to implement:
-- [ ] BepInEx plugin setup
-- [ ] JSON data loader
-- [ ] Chunk management system
-- [ ] Road network builder
-- [ ] Transit system builder
-- [ ] UI integration
+🚧 In Development
+
+- [x] PDX `IMod` entry point
+- [x] JSON data models matching the export schema
+- [x] Full + chunked JSON loader
+- [x] Chunk load/unload manager (distance based)
+- [x] Builder system: prefab resolution + chunk iteration
+- [ ] Network realisation via the net tool / `ApplyNetSystem` flow
+- [ ] Camera-driven chunk focus
+- [ ] Building + transit placement
+- [ ] In-game UI
