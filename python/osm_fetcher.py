@@ -144,7 +144,8 @@ class OSMFetcher:
             self._log = log
 
         if features is None:
-            features = ["roads", "railways", "waterways", "bus", "tram", "train", "buildings"]
+            features = ["roads", "railways", "waterways", "bus", "tram", "train",
+                        "buildings", "districts"]
 
         south, west, north, east = bbox
         bbox_str = f"{south},{west},{north},{east}"
@@ -173,11 +174,26 @@ class OSMFetcher:
             self._log("Fetching buildings…")
             results["buildings"] = self._fetch_buildings(bbox_str)
 
+        if "districts" in features:
+            self._log("Fetching places (districts)…")
+            results["places"] = self._fetch_places(bbox_str)
+
         return results
 
     # ------------------------------------------------------------------
     # Overpass queries
     # ------------------------------------------------------------------
+
+    def _fetch_places(self, bbox_str: str) -> overpy.Result:
+        # Settlement nodes → CS2 districts so each town/village is labelled.
+        query = f"""
+        [out:json][timeout:180];
+        (
+          node["place"~"city|town|village|hamlet|suburb|neighbourhood"]({bbox_str});
+        );
+        out body;
+        """
+        return self._query_with_retry(query)
 
     def _fetch_roads(self, bbox_str: str) -> overpy.Result:
         query = f"""

@@ -22,16 +22,27 @@
 - [x] Name-based class hints (multilingual, e.g. Dutch *voetweg* → footpath) and
       pedestrian/alley routing to a CS2 pathway
 - [x] Numbered-route refs (A12, N15) with class-based shield colour
+- [x] Bike infrastructure: dedicated cycle paths + on-road bike-lane variants
+- [x] Tram roads: rails embedded in a road → tram-upgraded road
+- [x] Utilities flag (surface roads carry water/sewage/power; highways don't)
+- [x] Railway vertical structure: ground/embankment/elevated/bridge/viaduct/cutting/tunnel
+- [x] Waterway width + depth, with a min-width filter for ditches
+- [x] Districts: named settlement areas (city/town/village/…)
+- [x] Outside connections at the map edge (highway/rail/ship)
+- [x] `--map-size` (full/half/quarter/city) to fill the whole CS2 map
 - [x] Create spatial chunking algorithm (grid-based, configurable cell size)
 - [x] European asset theme (roads, railways, buildings, transit, terrain/climate)
-- [x] Interactive web generator: drag a CS2-map-sized box over OSM, Generate on demand
+- [x] Interactive web generator + preview (one layer at a time) and CS2 import button
 - [x] Shared `generate_city_data` pipeline used by both the CLI and the web generator
 
 ### CS2 Mod Side
-- [ ] Set up proper C# project with CS2 SDK
-- [ ] Research CS2 modding API (road creation, transit, etc.)
-- [ ] Implement JSON data loader
-- [ ] Create basic road network builder
+- [x] Set up the C# project on the official PDX `IMod` framework
+- [x] Data models matching the JSON export + JSON loader
+- [x] Chunk manager + builder-system scaffold
+- [x] Import manifest handling (unlimited money / unlock all / tiles / mods)
+- [ ] Research CS2 network-creation API (tool systems / ApplyNetSystem)
+- [ ] Build the road/rail network from the data in-game
+- [ ] Place buildings, transit lines, districts and outside connections
 - [ ] Test single chunk loading in-game
 
 ## Phase 3: Dynamic Loading

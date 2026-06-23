@@ -289,6 +289,18 @@ class CS2Converter:
     # Depth (metres below terrain) at which underground tracks are placed.
     TUNNEL_DEPTH_M = 12.0
 
+    # Signed vertical offset (metres) baked into a track's y per structure.
+    # Tunnels are handled separately via depth_m, so their offset here is 0.
+    STRUCTURE_HEIGHT_M = {
+        "ground":     0.0,
+        "cutting":   -4.0,   # recessed / open trench
+        "embankment": 3.0,   # raised on fill
+        "elevated":   8.0,   # high / continuous elevated track
+        "bridge":     8.0,
+        "viaduct":   10.0,   # long elevated span
+        "tunnel":     0.0,   # y stays at terrain; depth_m sinks it
+    }
+
     # Cities: Skylines 2 has no real-world currency — money is a single,
     # abstract in-game unit shown with the game's money symbol "₡".  Every
     # fare written to the CS2 output uses this; any real-world currency read
@@ -545,6 +557,8 @@ class CS2Converter:
         for rail in railways:
             is_underground = rail.get("is_underground", False)
             is_commuter    = rail.get("is_commuter", False)
+            structure      = rail.get("structure", "ground")
+            height_m       = self.STRUCTURE_HEIGHT_M.get(structure, 0.0)
             cs2_type       = self._map_railway_type(
                 rail["type"], is_underground, is_commuter
             )
@@ -552,6 +566,11 @@ class CS2Converter:
                 rail["coordinates"], self.elevations
             )
             for idx, seg in enumerate(segments):
+                # Bake the structure offset into the track's y (tunnels keep
+                # terrain y and sink via depth_m instead).
+                if height_m:
+                    for p in seg:
+                        p["y"] = round(p["y"] + height_m, 2)
                 seg_id = f"rail_{rail['id']}" if len(segments) == 1 else f"rail_{rail['id']}_{idx}"
                 cs2_railways.append({
                     "id":             seg_id,
@@ -560,6 +579,9 @@ class CS2Converter:
                     "points":         seg,
                     "electrified":    rail.get("electrified") == "yes",
                     "is_underground": is_underground,
+                    "structure":      structure,
+                    # Signed height baked into y (elevated +, recessed -).
+                    "height_m":       height_m,
                     "is_commuter":    is_commuter,
                     # Depth below terrain for the mod to sink a tunnel (metres).
                     "depth_m":        self.TUNNEL_DEPTH_M if is_underground else 0.0,
@@ -786,6 +808,45 @@ class CS2Converter:
             cs2_routes.append(entry)
 
         return {"stops": cs2_stops, "routes": cs2_routes}
+
+    # ------------------------------------------------------------------
+    # Districts (named settlement areas)
+    # ------------------------------------------------------------------
+
+    # Default district radius (m) by settlement type, used when population is
+    # unknown. The mod paints a CS2 district of roughly this size around the
+    # centre so each town/village's road mass is labelled.
+    PLACE_RADIUS_M = {
+        "city": 4000.0, "town": 1800.0, "village": 800.0,
+        "hamlet": 350.0, "suburb": 1200.0, "neighbourhood": 600.0,
+    }
+
+    def convert_districts(
+        self, places: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert settlement nodes to CS2 districts — a named area per town/village
+        so it's clear which road mass belongs to which place.
+        """
+        districts = []
+        for p in places:
+            try:
+                lon, lat = float(p["coordinates"][0]), float(p["coordinates"][1])
+            except (TypeError, ValueError, KeyError, IndexError):
+                continue
+            if not self.transformer.in_bounds(lat, lon):
+                continue
+            elev = self.elevations.get((round(lat, 6), round(lon, 6)), 0.0)
+            radius = self.PLACE_RADIUS_M.get(p.get("place_type", ""), 600.0)
+            districts.append({
+                "id":         f"district_{p['id']}",
+                "name":       p["name"],
+                "type":       p.get("place_type", "village"),
+                "position":   self.transformer.to_cs2(lat, lon, elev),
+                "population": p.get("population", 0),
+                "radius_m":   radius,
+            })
+        return districts
 
     # ------------------------------------------------------------------
     # Outside connections

@@ -255,6 +255,41 @@ class TestParseRailways:
         railways = parser.parse_railways(_mock_result(ways=[way]))
         assert railways[0]["is_commuter"] is True
 
+    def test_structure_classification(self, parser):
+        cases = {
+            "tunnel":     {"tunnel": "yes"},
+            "cutting":    {"cutting": "yes"},
+            "viaduct":    {"bridge": "viaduct"},
+            "bridge":     {"bridge": "yes"},
+            "embankment": {"embankment": "yes"},
+            "elevated":   {"layer": "1"},
+            "ground":     {},
+        }
+        for expected, extra in cases.items():
+            assert parser._way_structure({"railway": "rail", **extra}) == expected
+
+    def test_structure_on_parsed_railway(self, parser):
+        nodes = _make_way_nodes([(7.4, 43.7), (7.41, 43.71)])
+        way = _mock_way(205, nodes, {"railway": "rail", "bridge": "viaduct"})
+        assert parser.parse_railways(_mock_result(ways=[way]))[0]["structure"] == "viaduct"
+
+
+class TestParsePlaces:
+    def test_parses_town(self, parser):
+        n = _mock_node(300, 51.05, 3.72, {"place": "town", "name": "Deinze",
+                                          "population": "44,000"})
+        places = parser.parse_places(_mock_result(nodes=[n]))
+        assert len(places) == 1
+        assert places[0]["name"] == "Deinze"
+        assert places[0]["place_type"] == "town"
+        assert places[0]["population"] == 44000
+        assert places[0]["coordinates"] == (3.72, 51.05)
+
+    def test_skips_non_place_and_unnamed(self, parser):
+        n1 = _mock_node(301, 51.0, 3.7, {"place": "town"})            # no name
+        n2 = _mock_node(302, 51.0, 3.7, {"amenity": "cafe", "name": "X"})  # not a place
+        assert parser.parse_places(_mock_result(nodes=[n1, n2])) == []
+
 
 # ---------------------------------------------------------------
 # get_underground_way_ids

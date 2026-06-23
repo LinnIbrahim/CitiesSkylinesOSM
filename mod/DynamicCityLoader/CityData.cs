@@ -63,13 +63,22 @@ namespace DynamicCityLoader
 
     public class RailwaySegment
     {
-        [JsonProperty("id")]          public string Id { get; set; }
-        [JsonProperty("type")]        public string Type { get; set; }
-        [JsonProperty("name")]        public string Name { get; set; }
-        [JsonProperty("points")]      public List<Point3> Points { get; set; }
-        [JsonProperty("electrified")] public bool Electrified { get; set; }
-        [JsonProperty("theme")]       public string Theme { get; set; }
-        [JsonProperty("eu_prefab")]   public string EuPrefab { get; set; }
+        [JsonProperty("id")]             public string Id { get; set; }
+        [JsonProperty("type")]           public string Type { get; set; }
+        [JsonProperty("name")]           public string Name { get; set; }
+        [JsonProperty("points")]         public List<Point3> Points { get; set; }
+        [JsonProperty("electrified")]    public bool Electrified { get; set; }
+        [JsonProperty("is_underground")] public bool IsUnderground { get; set; }
+
+        // Vertical structure: ground | cutting | embankment | elevated | bridge
+        // | viaduct | tunnel. HeightM is the signed offset already baked into
+        // the track y (+ elevated, - recessed); DepthM sinks tunnels below it.
+        [JsonProperty("structure")]      public string Structure { get; set; }
+        [JsonProperty("height_m")]       public float HeightM { get; set; }
+        [JsonProperty("depth_m")]        public float DepthM { get; set; }
+
+        [JsonProperty("theme")]          public string Theme { get; set; }
+        [JsonProperty("eu_prefab")]      public string EuPrefab { get; set; }
     }
 
     public class Waterway
@@ -160,6 +169,20 @@ namespace DynamicCityLoader
     }
 
     /// <summary>
+    /// A named settlement area → a CS2 district, so each town/village's road
+    /// mass is labelled. Position is the centre; RadiusM is the painted size.
+    /// </summary>
+    public class District
+    {
+        [JsonProperty("id")]         public string Id { get; set; }
+        [JsonProperty("name")]       public string Name { get; set; }
+        [JsonProperty("type")]       public string Type { get; set; }  // city|town|village|…
+        [JsonProperty("position")]   public Point3 Position { get; set; }
+        [JsonProperty("population")] public int Population { get; set; }
+        [JsonProperty("radius_m")]   public float RadiusM { get; set; }
+    }
+
+    /// <summary>
     /// A point on the map edge where a highway/rail/waterway network leaves the
     /// map. CS2 needs these so the city links to the world beyond the boundary.
     /// </summary>
@@ -180,6 +203,7 @@ namespace DynamicCityLoader
         [JsonProperty("waterways")]           public List<Waterway> Waterways { get; set; }
         [JsonProperty("buildings")]           public List<Building> Buildings { get; set; }
         [JsonProperty("transit")]             public TransitData Transit { get; set; }
+        [JsonProperty("districts")]           public List<District> Districts { get; set; }
         [JsonProperty("outside_connections")] public List<OutsideConnection> OutsideConnections { get; set; }
         [JsonProperty("_meta")]               public CityMeta Meta { get; set; }
     }

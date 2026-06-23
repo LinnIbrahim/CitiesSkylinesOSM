@@ -196,12 +196,41 @@ class OSMParser:
                 "gauge":          way.tags.get("gauge", ""),
                 "electrified":    way.tags.get("electrified", ""),
                 "is_underground": self._way_is_underground(way.tags),
+                "structure":      self._way_structure(way.tags),
                 "is_commuter":    self._is_commuter_rail(way.tags),
                 "coordinates":    coords,
                 "geometry":       LineString(self._dedup_coords(coords)),
             })
 
         return railways
+
+    # ------------------------------------------------------------------
+    # Places (→ districts)
+    # ------------------------------------------------------------------
+
+    _PLACE_TYPES = ("city", "town", "village", "hamlet", "suburb", "neighbourhood")
+
+    def parse_places(self, osm_result: overpy.Result) -> List[Dict[str, Any]]:
+        """Parse settlement nodes (city/town/village/…) for CS2 districts."""
+        places = []
+        for node in osm_result.nodes:
+            tags = node.tags or {}
+            place_type = tags.get("place")
+            name = tags.get("name", "")
+            if place_type not in self._PLACE_TYPES or not name:
+                continue
+            try:
+                population = int(str(tags.get("population", "0")).replace(",", "") or "0")
+            except ValueError:
+                population = 0
+            places.append({
+                "id":          node.id,
+                "name":        name,
+                "place_type":  place_type,
+                "population":  population,
+                "coordinates": (float(node.lon), float(node.lat)),
+            })
+        return places
 
     # Commuter / regional rail networks that OSM frequently tags as subway
     # (or that run in tunnels downtown) but behave like trains: S-Bahn (DE/AT/CH),
@@ -245,6 +274,32 @@ class OSMParser:
             or layer < 0
             or tags.get("covered") == "yes"
         )
+
+    @classmethod
+    def _way_structure(cls, tags: dict) -> str:
+        """
+        Vertical structure of a track/way, most-specific first:
+        tunnel → cutting (recessed) → viaduct → bridge → embankment →
+        elevated (high/connected) → ground.
+        """
+        if cls._way_is_underground(tags):
+            return "tunnel"
+        try:
+            layer = int(tags.get("layer", "0") or "0")
+        except ValueError:
+            layer = 0
+        if tags.get("cutting") in ("yes", "both", "left", "right"):
+            return "cutting"
+        bridge = tags.get("bridge", "")
+        if bridge == "viaduct" or tags.get("man_made") == "viaduct":
+            return "viaduct"
+        if bridge in ("yes", "true", "1") or tags.get("man_made") == "bridge":
+            return "bridge"
+        if tags.get("embankment") in ("yes", "both") or tags.get("man_made") == "embankment":
+            return "embankment"
+        if layer > 0 or tags.get("location") == "overground":
+            return "elevated"
+        return "ground"
 
     # ------------------------------------------------------------------
     # Underground way detection  (call on the railway OSM result)

@@ -17,7 +17,8 @@ from eu_assets import apply_theme
 
 Bbox = Tuple[float, float, float, float]
 
-DEFAULT_FEATURES = ["roads", "railways", "waterways", "bus", "tram", "train", "buildings"]
+DEFAULT_FEATURES = ["roads", "railways", "waterways", "bus", "tram", "train",
+                    "buildings", "districts"]
 
 
 def generate_city_data(
@@ -104,6 +105,10 @@ def generate_city_data(
         parsed["buildings"] = parser.parse_buildings(osm_data["buildings"])
         log(f"  Buildings:  {len(parsed['buildings'])} total")
 
+    if "places" in osm_data:
+        parsed["places"] = parser.parse_places(osm_data["places"])
+        log(f"  Places:     {len(parsed['places'])} settlements")
+
     # ----------------------------------------------------------------
     # 3. Fetch elevation
     # ----------------------------------------------------------------
@@ -143,6 +148,8 @@ def generate_city_data(
         cs2_data["transit"] = converter.convert_transit(parsed["transit"])
     if "buildings" in parsed:
         cs2_data["buildings"] = converter.convert_buildings(parsed["buildings"])
+    if "places" in parsed:
+        cs2_data["districts"] = converter.convert_districts(parsed["places"])
 
     # ----------------------------------------------------------------
     # 5. Simplify geometry
@@ -183,6 +190,7 @@ def generate_city_data(
         "railways":  len(cs2_data.get("railways", [])),
         "waterways": len(cs2_data.get("waterways", [])),
         "buildings": len(cs2_data.get("buildings", [])),
+        "districts": len(cs2_data.get("districts", [])),
         "stops":     len(cs2_data.get("transit", {}).get("stops", [])),
         "routes":    len(cs2_data.get("transit", {}).get("routes", [])),
         "chunks":    len(chunks),

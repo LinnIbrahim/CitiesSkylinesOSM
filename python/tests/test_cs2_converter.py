@@ -297,6 +297,44 @@ class TestConvertRailways:
         assert cs2[0]["is_underground"] is False
         assert cs2[0]["depth_m"] == 0.0
 
+    def test_elevated_rail_raises_y(self, converter):
+        railways = [{
+            "id": 30, "type": "rail", "name": "Viaduct Line",
+            "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+            "electrified": "yes", "is_underground": False,
+            "structure": "viaduct", "geometry": None,
+        }]
+        cs2 = converter.convert_railways(railways)
+        assert cs2[0]["structure"] == "viaduct"
+        assert cs2[0]["height_m"] == converter.STRUCTURE_HEIGHT_M["viaduct"]
+        # The structure offset is baked into every point's y.
+        assert all(p["y"] >= converter.STRUCTURE_HEIGHT_M["viaduct"] for p in cs2[0]["points"])
+
+    def test_cutting_lowers_y(self, converter):
+        def rail(structure):
+            return [{
+                "id": 31, "type": "rail", "name": "X",
+                "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+                "electrified": "no", "is_underground": False,
+                "structure": structure, "geometry": None,
+            }]
+        ground  = converter.convert_railways(rail("ground"))[0]
+        cutting = converter.convert_railways(rail("cutting"))[0]
+        assert cutting["height_m"] == -4.0
+        # Cutting sits 4 m below the same track at ground level.
+        assert cutting["points"][0]["y"] == pytest.approx(ground["points"][0]["y"] - 4.0)
+
+    def test_ground_rail_unchanged(self, converter):
+        railways = [{
+            "id": 32, "type": "rail", "name": "Flat",
+            "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+            "electrified": "no", "is_underground": False,
+            "structure": "ground", "geometry": None,
+        }]
+        cs2 = converter.convert_railways(railways)
+        assert cs2[0]["height_m"] == 0.0
+        assert cs2[0]["structure"] == "ground"
+
     def test_rail_and_tram_mapping(self, converter):
         assert converter._map_railway_type("rail") == "Train"
         assert converter._map_railway_type("light_rail") == "Metro"
@@ -555,6 +593,33 @@ class TestConvertTransit:
             }],
         }
         assert converter.convert_transit(transit)["routes"] == []
+
+
+# ---------------------------------------------------------------
+# CS2Converter.convert_districts
+# ---------------------------------------------------------------
+
+class TestConvertDistricts:
+    def test_in_bounds_district(self, converter):
+        places = [{"id": 1, "name": "Centre", "place_type": "town",
+                   "population": 5000, "coordinates": (7.42, 43.73)}]
+        out = converter.convert_districts(places)
+        assert len(out) == 1
+        assert out[0]["name"] == "Centre"
+        assert out[0]["id"] == "district_1"
+        assert out[0]["radius_m"] == converter.PLACE_RADIUS_M["town"]
+        assert "x" in out[0]["position"]
+
+    def test_out_of_bounds_dropped(self, converter):
+        places = [{"id": 2, "name": "Far", "place_type": "city",
+                   "population": 0, "coordinates": (100.0, 80.0)}]
+        assert converter.convert_districts(places) == []
+
+    def test_radius_by_type(self, converter):
+        places = [{"id": 3, "name": "Hmlt", "place_type": "hamlet",
+                   "population": 0, "coordinates": (7.42, 43.73)}]
+        assert converter.convert_districts(places)[0]["radius_m"] == \
+            converter.PLACE_RADIUS_M["hamlet"]
 
 
 # ---------------------------------------------------------------

@@ -29,6 +29,13 @@
 - Elevation sampled from **OpenTopoData SRTM 30 m**, batched and cached to
   `data/osm/elevation_cache.json`.
 
+#### Railway structure (vertical placement)
+- Each track is classified by vertical structure — **tunnel, cutting (recessed),
+  ground, embankment, elevated (high/connected), bridge, viaduct** — from OSM
+  `tunnel`/`cutting`/`bridge`/`embankment`/`layer` tags.
+- A signed `height_m` is baked into the track's y (elevated +, recessed −);
+  tunnels keep terrain y and sink via the existing `depth_m`.
+
 #### Waterways
 - Rivers, streams, canals, lakes, reservoirs and coastline, with area polygons
   flagged via `isArea`.
@@ -60,6 +67,11 @@
   water/sewage/electricity underground, but highways (and pedestrian paths) do
   not — so the mod knows which zoning needs standalone utilities placed
   alongside.
+
+#### Districts
+- Settlement nodes (city/town/village/hamlet/suburb/neighbourhood) become named
+  **districts** with a centre and per-type radius, so each town's road mass is
+  labelled in-game. (Exact admin-boundary polygons are a planned follow-up.)
 
 #### Map sizing & outside connections
 - `--map-size` (default `full`) extracts a CS2-map-sized area (57.3 km) centred

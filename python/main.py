@@ -43,7 +43,7 @@ def main():
     )
     parser.add_argument(
         "--features", type=str,
-        default="roads,railways,waterways,bus,tram,train,buildings",
+        default="roads,railways,waterways,bus,tram,train,buildings,districts",
         help="Comma-separated features to fetch (default: all)"
     )
     parser.add_argument(

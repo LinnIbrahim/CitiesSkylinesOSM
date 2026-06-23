@@ -173,6 +173,23 @@ def cs2_to_geojson(cs2_data):
             },
         })
 
+    # --- Districts (named settlement areas) ---
+    for d in cs2_data.get("districts", []):
+        pos = d.get("position", {})
+        lat, lon = _rev(pos)
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {
+                "layer": "districts",
+                "id": d.get("id", ""),
+                "name": d.get("name", ""),
+                "district_type": d.get("type", ""),
+                "population": d.get("population", 0),
+                "radius_m": d.get("radius_m", 0),
+            },
+        })
+
     # --- Outside connections (highway/rail/ship at the map edge) ---
     for oc in cs2_data.get("outside_connections", []):
         pos = oc.get("position", {})
@@ -249,6 +266,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 #importbtn:disabled { background:#9bbfa8; cursor:default; }
 #import-status { margin-top:8px; font-size:11px; line-height:1.4; word-break:break-all; }
 #import-status code { background:#f0f0f0; padding:1px 3px; border-radius:2px; }
+.district-label { background:transparent; border:none; box-shadow:none;
+    color:#5b2c6f; font-weight:700; font-size:12px; text-shadow:0 0 3px #fff,0 0 3px #fff; }
 
 .layer-toggle { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
 .layer-toggle input { margin: 0; }
@@ -311,6 +330,7 @@ const LAYER_CONFIG = {
     waterways:     { color: '#2980b9', weight: 2,   label: 'Waterways', swatch: 'line' },
     buildings:     { color: '#9b59b6', weight: 1,   label: 'Buildings', swatch: 'polygon', fillOpacity: 0.35 },
     transit_stops: { color: '#e74c3c', weight: 0,   label: 'Stops',     swatch: 'circle', radius: 5 },
+    districts:     { color: '#8e44ad', weight: 1,   label: 'Districts', swatch: 'circle', radius: 6 },
     outside_connections: { color: '#111111', weight: 2, label: 'Outside connections', swatch: 'circle', radius: 9 },
     cs2_bounds:    { color: '#e74c3c', weight: 2,   label: 'CS2 Map Edge', swatch: 'line', dashArray: '8,6' },
 };
@@ -515,7 +535,14 @@ function buildFeature(f) {
 
     if (geom.type === 'Point') {
         const [lon, lat] = geom.coordinates;
-        if (layer === 'outside_connections') {
+        if (layer === 'districts') {
+            const r = f.properties.radius_m || 600;
+            leafletLayer = L.circle([lat, lon], {
+                radius: r, color: '#8e44ad', weight: 1,
+                fillColor: '#8e44ad', fillOpacity: 0.08 });
+            leafletLayer.bindTooltip(f.properties.name || '',
+                { permanent: true, direction: 'center', className: 'district-label' });
+        } else if (layer === 'outside_connections') {
             const c = OC_COLORS[f.properties.oc_type] || '#111';
             leafletLayer = L.circleMarker([lat, lon], {
                 radius: 9, color: '#111', fillColor: c, fillOpacity: 0.95, weight: 2 });
