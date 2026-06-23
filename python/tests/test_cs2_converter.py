@@ -234,6 +234,17 @@ class TestClassifyRoad:
         assert out[0]["clamped"] is True
         assert out[0]["original_lanes"] == 9
 
+    def test_surface_roads_carry_utilities(self, converter):
+        # Surface roads auto-provide water/sewage/electricity in CS2.
+        assert converter.classify_road(_road("residential", 2))["utilities"] is True
+        assert converter.classify_road(_road("secondary", 4))["utilities"] is True
+        assert converter.classify_road(_road("alley", 1))["utilities"] is True
+
+    def test_highway_and_paths_have_no_utilities(self, converter):
+        # Highways and pedestrian paths do not carry utilities.
+        assert converter.classify_road(_road("motorway", 3))["utilities"] is False
+        assert converter.classify_road(_road("footway", 1))["utilities"] is False
+
 
 # ---------------------------------------------------------------
 # CS2Converter.convert_railways
@@ -345,7 +356,8 @@ class TestConvertTransit:
         assert cs2["stops"][0]["id"] == "stop_1"
         assert cs2["stops"][0]["has_shelter"] is True
 
-    def test_external_stop_clamped(self, converter):
+    def test_external_stop_dropped_all_modes(self, converter):
+        # Edge stops are not supported for any mode (train included) — dropped.
         transit = {
             "stops": [{
                 "id": 2, "name": "Far Away", "type": "train",
@@ -356,28 +368,26 @@ class TestConvertTransit:
             }],
             "routes": [],
         }
-        cs2 = converter.convert_transit(transit)
-        assert len(cs2["stops"]) == 1
-        pos = cs2["stops"][0]["position"]
-        half = converter.transformer.CS2_HALF_MAP
-        assert abs(pos["x"]) <= half + 1
-        assert abs(pos["z"]) <= half + 1
+        assert converter.convert_transit(transit)["stops"] == []
 
     def test_route_with_fare(self, converter):
         transit = {
-            "stops": [{
-                "id": 10, "name": "A", "type": "bus",
-                "coordinates": (7.42, 43.73),
-                "is_external": False, "is_underground": False,
-                "has_shelter": False, "has_bench": False,
-                "wheelchair": "unknown",
-            }],
+            "stops": [
+                {"id": 10, "name": "A", "type": "bus",
+                 "coordinates": (7.42, 43.73), "is_external": False,
+                 "is_underground": False, "has_shelter": False,
+                 "has_bench": False, "wheelchair": "unknown"},
+                {"id": 12, "name": "B", "type": "bus",
+                 "coordinates": (7.43, 43.74), "is_external": False,
+                 "is_underground": False, "has_shelter": False,
+                 "has_bench": False, "wheelchair": "unknown"},
+            ],
             "routes": [{
                 "id": 100, "name": "Bus 1", "ref": "1",
                 "route_type": "bus", "operator": "RATP",
                 "colour": "#FF0000", "network": "Nice", "from": "A", "to": "B",
                 "is_intercity": False,
-                "stop_ids": [10],
+                "stop_ids": [10, 12],
                 "fare": {"base_fare": 2.50, "currency": "EUR", "source": "osm"},
             }],
         }
@@ -392,18 +402,21 @@ class TestConvertTransit:
 
     def test_default_fare_uses_game_currency(self, converter):
         transit = {
-            "stops": [{
-                "id": 11, "name": "B", "type": "bus",
-                "coordinates": (7.42, 43.73),
-                "is_external": False, "is_underground": False,
-                "has_shelter": False, "has_bench": False,
-                "wheelchair": "unknown",
-            }],
+            "stops": [
+                {"id": 11, "name": "B", "type": "bus",
+                 "coordinates": (7.42, 43.73), "is_external": False,
+                 "is_underground": False, "has_shelter": False,
+                 "has_bench": False, "wheelchair": "unknown"},
+                {"id": 13, "name": "C", "type": "bus",
+                 "coordinates": (7.43, 43.74), "is_external": False,
+                 "is_underground": False, "has_shelter": False,
+                 "has_bench": False, "wheelchair": "unknown"},
+            ],
             "routes": [{
                 "id": 101, "name": "Bus 2", "ref": "2",
                 "route_type": "bus", "operator": "", "colour": "",
                 "network": "", "from": "", "to": "",
-                "is_intercity": False, "stop_ids": [11],
+                "is_intercity": False, "stop_ids": [11, 13],
                 "fare": None,
             }],
         }
@@ -412,6 +425,134 @@ class TestConvertTransit:
         assert fare["currency"] == converter.GAME_CURRENCY
         # No real-world currency was involved, so no provenance label.
         assert "source_currency" not in fare
+
+    def _bus_stop(self, sid, coords, external=False):
+        return {"id": sid, "name": f"S{sid}", "type": "bus",
+                "coordinates": coords, "is_external": external,
+                "is_underground": False, "has_shelter": False,
+                "has_bench": False, "wheelchair": "unknown"}
+
+    def test_external_bus_stop_dropped(self, converter):
+        # Edge bus stops are not supported — dropped, not pinned to the edge.
+        transit = {
+            "stops": [self._bus_stop(2, (100.0, 80.0), external=True)],
+            "routes": [],
+        }
+        assert converter.convert_transit(transit)["stops"] == []
+
+    def test_bus_line_cut_at_edge_loops_back(self, converter):
+        # A line with an external endpoint keeps its in-map stops, drops the
+        # edge stop, and is flagged loop + cut_at_edge.
+        transit = {
+            "stops": [
+                self._bus_stop(1, (7.42, 43.73)),
+                self._bus_stop(2, (7.43, 43.74)),
+                self._bus_stop(3, (100.0, 80.0), external=True),  # beyond edge
+            ],
+            "routes": [{
+                "id": 100, "name": "Bus 9", "ref": "9", "route_type": "bus",
+                "operator": "", "colour": "", "network": "", "from": "", "to": "",
+                "is_intercity": True, "stop_ids": [1, 2, 3], "fare": None,
+            }],
+        }
+        cs2 = converter.convert_transit(transit)
+        route = cs2["routes"][0]
+        assert route["stops"] == ["stop_1", "stop_2"]   # edge stop dropped
+        assert route["loop"] is True
+        assert route["cut_at_edge"] is True
+
+    def test_train_line_also_cuts_at_edge(self, converter):
+        # The same edge handling applies to rail, not just buses.
+        s1 = self._bus_stop(1, (7.42, 43.73)); s1["type"] = "train"
+        s2 = self._bus_stop(2, (7.43, 43.74)); s2["type"] = "train"
+        s3 = self._bus_stop(3, (100.0, 80.0), external=True); s3["type"] = "train"
+        transit = {
+            "stops": [s1, s2, s3],
+            "routes": [{
+                "id": 200, "name": "IC Brussels", "ref": "IC", "route_type": "train",
+                "operator": "", "colour": "", "network": "", "from": "", "to": "",
+                "is_intercity": True, "stop_ids": [1, 2, 3], "fare": None,
+            }],
+        }
+        cs2 = converter.convert_transit(transit)
+        assert cs2["stops"] == [] or all(not s["is_external"] for s in cs2["stops"])
+        route = cs2["routes"][0]
+        assert route["type"] == "TrainLine"
+        assert route["stops"] == ["stop_1", "stop_2"]
+        assert route["loop"] is True
+        assert route["cut_at_edge"] is True
+
+    def test_bus_line_too_few_stops_dropped(self, converter):
+        # Only one in-map stop after dropping the edge stop → not a usable line.
+        transit = {
+            "stops": [
+                self._bus_stop(1, (7.42, 43.73)),
+                self._bus_stop(2, (100.0, 80.0), external=True),
+            ],
+            "routes": [{
+                "id": 101, "name": "Bus X", "ref": "X", "route_type": "bus",
+                "operator": "", "colour": "", "network": "", "from": "", "to": "",
+                "is_intercity": True, "stop_ids": [1, 2], "fare": None,
+            }],
+        }
+        assert converter.convert_transit(transit)["routes"] == []
+
+
+# ---------------------------------------------------------------
+# CS2Converter.find_outside_connections
+# ---------------------------------------------------------------
+
+class TestOutsideConnections:
+    def _seg(self, edge_pt, interior_pt):
+        return [edge_pt, interior_pt]
+
+    def test_highway_at_edge_detected(self, converter):
+        half = converter.transformer.CS2_HALF_MAP
+        data = {"roads": [{"id": "road_1", "type": "Highway", "name": "E40",
+                           "points": self._seg({"x": half, "y": 0, "z": 1000},
+                                               {"x": 1000, "y": 0, "z": 1000})}]}
+        oc = converter.find_outside_connections(data)
+        assert len(oc) == 1
+        assert oc[0]["type"] == "Highway"
+        assert oc[0]["network"] == "road_1"
+
+    def test_surface_road_at_edge_not_connected(self, converter):
+        half = converter.transformer.CS2_HALF_MAP
+        data = {"roads": [{"id": "road_2", "type": "SmallRoad", "name": "",
+                           "points": self._seg({"x": half, "y": 0, "z": 0},
+                                               {"x": 0, "y": 0, "z": 0})}]}
+        assert converter.find_outside_connections(data) == []
+
+    def test_interior_highway_ignored(self, converter):
+        data = {"roads": [{"id": "road_3", "type": "Highway", "name": "",
+                           "points": [{"x": 0, "y": 0, "z": 0},
+                                      {"x": 5000, "y": 0, "z": 5000}]}]}
+        assert converter.find_outside_connections(data) == []
+
+    def test_surface_train_connects_subway_does_not(self, converter):
+        half = converter.transformer.CS2_HALF_MAP
+        edge = {"x": -half, "y": 0, "z": 200}
+        interior = {"x": -5000, "y": 0, "z": 200}
+        data = {"railways": [
+            {"id": "rail_1", "type": "Train", "is_underground": False,
+             "points": [edge, interior]},
+            {"id": "rail_2", "type": "Subway", "is_underground": True,
+             "points": [edge, interior]},
+        ]}
+        oc = converter.find_outside_connections(data)
+        assert [c["type"] for c in oc] == ["Train"]
+        assert oc[0]["network"] == "rail_1"
+
+    def test_river_makes_ship_connection(self, converter):
+        half = converter.transformer.CS2_HALF_MAP
+        data = {"waterways": [
+            {"id": "water_1", "type": "River", "isArea": False,
+             "points": [{"x": 0, "y": 0, "z": half}, {"x": 0, "y": 0, "z": 0}]},
+            {"id": "water_2", "type": "Stream", "isArea": False,
+             "points": [{"x": 100, "y": 0, "z": half}, {"x": 100, "y": 0, "z": 0}]},
+        ]}
+        oc = converter.find_outside_connections(data)
+        assert [c["type"] for c in oc] == ["Ship"]
 
 
 # ---------------------------------------------------------------

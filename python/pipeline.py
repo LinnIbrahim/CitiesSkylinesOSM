@@ -149,6 +149,11 @@ def generate_city_data(
         log(f"Simplifying geometry (tolerance={simplify_tolerance} m)…")
         cs2_data = converter.simplify_all(cs2_data, tolerance=simplify_tolerance)
 
+    # Outside connections: where highway/rail/waterway networks reach the map
+    # edge, so the city can link to the world beyond the map.
+    cs2_data["outside_connections"] = converter.find_outside_connections(cs2_data)
+    log(f"  Outside connections: {len(cs2_data['outside_connections'])}")
+
     # Metadata (before theming, so the theme block can be added on top)
     cs2_data["_meta"] = {
         "city":              city_name,

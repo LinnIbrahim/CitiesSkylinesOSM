@@ -36,6 +36,11 @@ namespace DynamicCityLoader
         [JsonProperty("speedLimit")]     public int SpeedLimit { get; set; }
         [JsonProperty("priority")]       public int Priority { get; set; }
 
+        // True when the CS2 type auto-carries water/sewage/electricity (all
+        // surface roads). False for highways/pathways — zoning served only by
+        // those needs standalone utilities placed alongside.
+        [JsonProperty("utilities")]      public bool Utilities { get; set; }
+
         // Set when the real lane count exceeded the vanilla CS2 ceiling and the
         // road was clamped to the widest available type (e.g. Texas freeways).
         [JsonProperty("clamped")]        public bool Clamped { get; set; }
@@ -96,11 +101,17 @@ namespace DynamicCityLoader
 
     public class TransitRoute
     {
-        [JsonProperty("id")]     public string Id { get; set; }
-        [JsonProperty("name")]   public string Name { get; set; }
-        [JsonProperty("number")] public string Number { get; set; }
-        [JsonProperty("type")]   public string Type { get; set; }
-        [JsonProperty("stops")]  public List<string> Stops { get; set; }
+        [JsonProperty("id")]          public string Id { get; set; }
+        [JsonProperty("name")]        public string Name { get; set; }
+        [JsonProperty("number")]      public string Number { get; set; }
+        [JsonProperty("type")]        public string Type { get; set; }
+        [JsonProperty("stops")]       public List<string> Stops { get; set; }
+
+        // CS2 transport lines are closed loops (no external connections).
+        // CutAtEdge marks a line that reached the map boundary: its edge stops
+        // were dropped and it loops back through its in-map stops.
+        [JsonProperty("loop")]        public bool Loop { get; set; }
+        [JsonProperty("cut_at_edge")] public bool CutAtEdge { get; set; }
     }
 
     public class TransitData
@@ -140,14 +151,28 @@ namespace DynamicCityLoader
         [JsonProperty("elevation_points")] public int ElevationPoints { get; set; }
     }
 
+    /// <summary>
+    /// A point on the map edge where a highway/rail/waterway network leaves the
+    /// map. CS2 needs these so the city links to the world beyond the boundary.
+    /// </summary>
+    public class OutsideConnection
+    {
+        [JsonProperty("id")]       public string Id { get; set; }
+        [JsonProperty("type")]     public string Type { get; set; }  // Highway | Train | Ship
+        [JsonProperty("position")] public Point3 Position { get; set; }
+        [JsonProperty("network")]  public string Network { get; set; }  // source segment id
+        [JsonProperty("name")]     public string Name { get; set; }
+    }
+
     /// <summary>The flat "*_full.json" export.</summary>
     public class CityData
     {
-        [JsonProperty("roads")]     public List<RoadSegment> Roads { get; set; }
-        [JsonProperty("railways")]  public List<RailwaySegment> Railways { get; set; }
-        [JsonProperty("waterways")] public List<Waterway> Waterways { get; set; }
-        [JsonProperty("buildings")] public List<Building> Buildings { get; set; }
-        [JsonProperty("transit")]   public TransitData Transit { get; set; }
-        [JsonProperty("_meta")]     public CityMeta Meta { get; set; }
+        [JsonProperty("roads")]               public List<RoadSegment> Roads { get; set; }
+        [JsonProperty("railways")]            public List<RailwaySegment> Railways { get; set; }
+        [JsonProperty("waterways")]           public List<Waterway> Waterways { get; set; }
+        [JsonProperty("buildings")]           public List<Building> Buildings { get; set; }
+        [JsonProperty("transit")]             public TransitData Transit { get; set; }
+        [JsonProperty("outside_connections")] public List<OutsideConnection> OutsideConnections { get; set; }
+        [JsonProperty("_meta")]               public CityMeta Meta { get; set; }
     }
 }

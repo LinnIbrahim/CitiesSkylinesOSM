@@ -4,10 +4,32 @@ Orchestrates: OSM fetch → parse → elevation → CS2 convert → chunk → sa
 """
 
 import argparse
+import math
 
 from osm_fetcher import OSMFetcher
 from osm_parser  import OSMParser
 from pipeline import generate_city_data
+from cs2_converter import CoordinateTransformer
+
+# Fraction of the full CS2 map (57.3 km) for each --map-size choice.
+MAP_SIZE_FACTORS = {"full": 1.0, "half": 0.5, "quarter": 0.25}
+
+
+def resize_bbox(bbox, map_size):
+    """
+    Recentre ``bbox`` to a CS2-map-sized square so the whole playable map is
+    filled. ``map_size == "city"`` keeps the original admin boundary unchanged.
+    """
+    if map_size == "city":
+        return bbox
+    size_m = CoordinateTransformer.CS2_MAP_SIZE * MAP_SIZE_FACTORS[map_size]
+    south, west, north, east = bbox
+    clat = (south + north) / 2.0
+    clon = (west + east) / 2.0
+    half = size_m / 2.0
+    dlat = half / 111_320.0
+    dlon = half / (111_320.0 * math.cos(math.radians(clat)))
+    return (clat - dlat, clon - dlon, clat + dlat, clon + dlon)
 
 
 def main():
@@ -43,6 +65,13 @@ def main():
     parser.add_argument(
         "--theme", type=str, default="european",
         help="Asset theme to apply: 'european' (default) or 'none' for vanilla."
+    )
+    parser.add_argument(
+        "--map-size", type=str, default="full",
+        choices=["full", "half", "quarter", "city"],
+        help="Area to extract, centred on the city: 'full' (default, the whole "
+             "57.3 km CS2 map), 'half', 'quarter', or 'city' (the OSM admin "
+             "boundary only — usually smaller than the map)."
     )
     parser.add_argument(
         "--fare-config", type=str, default=None,
@@ -84,6 +113,14 @@ def main():
     else:
         print("Please provide --city or --bbox.")
         return
+
+    # Expand to a CS2-map-sized area centred on the city so the whole playable
+    # map is filled (the admin boundary is usually much smaller than 57.3 km).
+    if args.map_size != "city":
+        bbox = resize_bbox(bbox, args.map_size)
+        print(f"  Map size '{args.map_size}': centred bbox "
+              f"south={bbox[0]:.5f}, west={bbox[1]:.5f}, "
+              f"north={bbox[2]:.5f}, east={bbox[3]:.5f}")
 
     # Validate the bbox before doing any heavy fetching
     err = fetcher.validate_bbox(bbox)

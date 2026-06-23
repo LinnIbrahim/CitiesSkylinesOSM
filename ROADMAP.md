@@ -45,7 +45,9 @@
 ## Phase 4: Public Transit
 
 - [ ] Transit stop placement
-- [ ] Bus route creation
+- [x] Bus route data: ordered in-map stops, edge stops dropped, lines cut at
+      the boundary and looped back (`loop` / `cut_at_edge`); connect in-game
+      with the transport line tool
 - [ ] Tram line implementation
 - [ ] Train/metro line implementation
 - [ ] Route scheduling (if supported by CS2)

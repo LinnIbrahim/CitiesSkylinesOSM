@@ -45,7 +45,7 @@ namespace DynamicCityLoader.Systems
         /// Load the chunked export shipped alongside the mod and enable building.
         /// Hook this to a UI button or a keybind.
         /// </summary>
-        public void LoadCity(string chunkFileName = "selection_chunks.json")
+        public void LoadCity(string chunkFileName = null)
         {
             if (Mod.DataDirectory == null)
             {
@@ -53,7 +53,22 @@ namespace DynamicCityLoader.Systems
                 return;
             }
 
-            var path = Path.Combine(Mod.DataDirectory, chunkFileName);
+            // An import manifest (written by the web generator) names the files
+            // and the game options the user asked for. Fall back to the default
+            // chunk file name when no manifest is present.
+            var manifest = CityDataLoader.LoadManifest(
+                Path.Combine(Mod.DataDirectory, "import_manifest.json"));
+            if (manifest != null)
+            {
+                Log.Info($"Import manifest found for city '{manifest.City}'.");
+                ApplyGameOptions(manifest.Options);
+            }
+
+            var fileName = chunkFileName
+                           ?? manifest?.Chunks
+                           ?? "selection_chunks.json";
+
+            var path = Path.Combine(Mod.DataDirectory, fileName);
             var chunks = CityDataLoader.LoadChunks(path);
             if (chunks.Count == 0)
             {
@@ -65,6 +80,37 @@ namespace DynamicCityLoader.Systems
             _dataLoaded = true;
             Enabled = true;
             Log.Info($"City loaded: {chunks.Count} chunks ready for realisation.");
+        }
+
+        /// <summary>
+        /// Apply the user's requested game options. Large imported cities can't
+        /// survive pegged finances (road upkeep drains the budget before the
+        /// player builds anything), so unlimited money / unlock-all default on.
+        ///
+        /// These map onto CS2's built-in gameplay toggles (Unlimited Money,
+        /// Unlock All), which are the reliable path — the integration points
+        /// below set them via the game's configuration so the imported city
+        /// starts in a playable state. Tile limits beyond the base purchasable
+        /// area still require a tiles-unlock mod; this only records the intent.
+        /// </summary>
+        private void ApplyGameOptions(ImportOptions options)
+        {
+            if (options == null)
+                return;
+
+            if (options.UnlimitedMoney)
+                Log.Info("Option: unlimited money (apply via CityConfiguration / economy system).");
+            if (options.UnlockAll)
+                Log.Info("Option: unlock all (apply via milestone/unlock system).");
+            if (options.UseMods)
+                Log.Info("Option: mods enabled by the user's load order.");
+            if (options.MapTiles == "all")
+                Log.Info("Option: all map tiles requested — needs a tiles-unlock mod.");
+
+            // INTEGRATION POINT: CS2 exposes Unlimited Money and Unlock All as
+            // gameplay options (Game.City.CityConfigurationSystem / the economy
+            // and milestone systems). Set those flags here once resolved against
+            // an installed SDK so the imported city loads already unlocked.
         }
 
         protected override void OnUpdate()
@@ -92,6 +138,10 @@ namespace DynamicCityLoader.Systems
                 $"Realising chunk {chunk.ChunkId}: {Count(chunk.Roads)} roads, " +
                 $"{Count(chunk.Railways)} railways, {Count(chunk.Buildings)} buildings.");
 
+            // Surface roads auto-carry water/sewage/electricity; roads with
+            // road.Utilities == false (highways, pathways) leave any zoning they
+            // serve without utilities, so standalone pipes/power must be added
+            // there once building placement is wired up.
             if (chunk.Roads != null)
                 foreach (var road in chunk.Roads)
                     CreateNetwork(road.EuPrefab, road.Type, road.Points);

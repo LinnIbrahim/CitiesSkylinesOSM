@@ -36,6 +36,7 @@ from preview_server import cs2_to_geojson
 from pipeline import generate_city_data
 from cs2_converter import CoordinateTransformer
 from eu_assets import available_themes
+from cs2_import import cs2_import_target, perform_import
 
 # CS2 playable map edge in metres (mirrors CoordinateTransformer.CS2_MAP_SIZE).
 CS2_MAP_SIZE = CoordinateTransformer.CS2_MAP_SIZE
@@ -161,6 +162,10 @@ button.sec:hover { background: #ddd; }
 .stat { display: flex; justify-content: space-between; padding: 2px 0; }
 .stat .label { color: #666; } .stat .value { font-weight: 600; }
 #status { margin-top: 10px; font-size: 12px; min-height: 16px; }
+.opt { display:block; font-size:12px; color:#333; margin:3px 0; cursor:pointer; }
+.opt input { margin-right:6px; vertical-align:middle; }
+#import-status { margin-top:8px; font-size:11px; line-height:1.4; word-break:break-all; }
+#import-status code { background:#f0f0f0; padding:1px 3px; border-radius:2px; }
 .box-handle { font-size: 22px; color: #e74c3c; text-shadow: 0 0 3px #fff;
     cursor: move; line-height: 1; }
 .theme-badge { display:inline-block; background:#2d8a4e; color:#fff; font-size:11px;
@@ -248,6 +253,14 @@ button.danger:hover { background: #a83224; }
     <div id="results" style="display:none">
         <h3>Result</h3>
         <div id="stats"></div>
+
+        <h3>Import to Cities: Skylines 2</h3>
+        <label class="opt"><input type="checkbox" id="opt-money" checked> Unlimited money</label>
+        <label class="opt"><input type="checkbox" id="opt-unlock" checked> Unlock all</label>
+        <label class="opt"><input type="checkbox" id="opt-tiles" checked> All map tiles</label>
+        <label class="opt"><input type="checkbox" id="opt-mods" checked> Enable mods</label>
+        <button id="importbtn" onclick="importToCS2()">⬇ Import into CS2 folder</button>
+        <div id="import-status"></div>
     </div>
 </div>
 
@@ -469,6 +482,7 @@ function generate() {
         const d = JSON.parse(e.data);
         finishProgress();
         setStatus('✓ Generated. Saved ' + (d.files || []).join(', '));
+        lastFiles = d.files || [];
         renderResult(d.geojson, d.counts, d.theme);
     });
 
@@ -534,6 +548,43 @@ function renderResult(geojson, counts, theme) {
     document.getElementById('results').style.display = 'block';
 }
 
+let lastFiles = [];
+
+function importToCS2() {
+    if (!lastFiles.length) { setImportStatus('Generate a city first.', true); return; }
+    const btn = document.getElementById('importbtn');
+    btn.disabled = true;
+    setImportStatus('Importing…');
+    fetch('/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            files: lastFiles,
+            city: 'selection',
+            options: {
+                unlimitedMoney: document.getElementById('opt-money').checked,
+                unlockAll:      document.getElementById('opt-unlock').checked,
+                allTiles:       document.getElementById('opt-tiles').checked,
+                useMods:        document.getElementById('opt-mods').checked,
+            },
+        }),
+    }).then(r => r.json()).then(d => {
+        btn.disabled = false;
+        if (d.error) { setImportStatus(d.error, true); return; }
+        const where = d.realMods
+            ? 'CS2 Mods folder'
+            : 'local staging folder (set CS2_MODS_DIR to auto-target the game)';
+        setImportStatus('✓ Copied ' + d.copied.length + ' file(s) to the ' +
+            where + ':<br><code>' + d.dest + '</code>');
+    }).catch(e => { btn.disabled = false; setImportStatus('Import failed: ' + e, true); });
+}
+
+function setImportStatus(html, isErr) {
+    const el = document.getElementById('import-status');
+    el.innerHTML = html;
+    el.style.color = isErr ? '#c0392b' : '#2e7d32';
+}
+
 function init() {
     map = L.map('map').setView([boxCenter.lat, boxCenter.lon], 12);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -591,6 +642,39 @@ class GenerateHandler(BaseHTTPRequestHandler):
         buf += "data: " + json.dumps(data) + "\n\n"
         self.wfile.write(buf.encode("utf-8"))
         self.wfile.flush()
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/import":
+            self._handle_import()
+        else:
+            self.send_error(404, "Not found")
+
+    def _send_json(self, payload: dict, status: int = 200):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_import(self):
+        """Copy generated city files into the CS2 mod folder + write a manifest."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self._send_json({"error": "Invalid request body."}, status=400)
+            return
+
+        output_dir = self.options.get("output_dir", "../data/processed")
+        payload, status = perform_import(
+            output_dir,
+            req.get("files") or [],
+            city=req.get("city", "selection"),
+            options=req.get("options") or {},
+        )
+        self._send_json(payload, status=status)
 
     def _handle_generate_sse(self, qs: dict):
         self.send_response(200)

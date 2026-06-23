@@ -48,6 +48,19 @@
   alley) fill missing/generic tags; footways/alleys route to a CS2 pathway.
 - Numbered-route **refs** (A12, N15) carried through with a class-based shield
   colour.
+- Each road carries a **`utilities`** flag: CS2 surface roads auto-provide
+  water/sewage/electricity underground, but highways (and pedestrian paths) do
+  not — so the mod knows which zoning needs standalone utilities placed
+  alongside.
+
+#### Map sizing & outside connections
+- `--map-size` (default `full`) extracts a CS2-map-sized area (57.3 km) centred
+  on the city so the whole playable map is filled, not just the admin boundary.
+- **Outside connections** are detected where highway, surface-rail and
+  river/canal networks reach the map edge, and emitted as typed markers
+  (Highway / Train / Ship) so the city can link to the world beyond the map.
+- **Edge transit stops** are dropped for every mode; lines that reach the
+  boundary are cut there and loop back (`loop` / `cut_at_edge`).
 
 #### European theme
 - Every asset tagged with its EU prefab (`eu_prefab`), right-hand `traffic_side`,

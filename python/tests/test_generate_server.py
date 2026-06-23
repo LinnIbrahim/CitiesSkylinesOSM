@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from generate_server import _build_page, CS2_MAP_SIZE
+from generate_server import _build_page, CS2_MAP_SIZE, cs2_import_target
 
 
 class TestBuildPage:
@@ -42,3 +42,32 @@ class TestBuildPage:
         page = _build_page()
         assert 'id="ov-cancel"' in page
         assert "cancelGenerate" in page
+
+    def test_import_controls(self):
+        page = _build_page()
+        assert "/api/import" in page
+        assert 'id="importbtn"' in page
+        assert 'id="opt-money"' in page      # unlimited money toggle
+        assert 'id="opt-unlock"' in page     # unlock all toggle
+        assert 'id="opt-tiles"' in page      # all map tiles toggle
+
+
+class TestCS2ImportTarget:
+    def test_env_var_takes_precedence(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CS2_MODS_DIR", str(tmp_path))
+        dest, is_real, source = cs2_import_target("../data/processed")
+        assert source == "CS2_MODS_DIR"
+        assert is_real is True
+        assert dest.endswith(os.path.join("DynamicCityLoader", "data"))
+        assert str(tmp_path) in dest
+
+    def test_staging_fallback_when_no_env_or_mods(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CS2_MODS_DIR", raising=False)
+        # Point HOME at an empty dir so no default Mods folder exists.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        out = tmp_path / "processed"
+        out.mkdir()
+        dest, is_real, source = cs2_import_target(str(out))
+        assert source == "staging"
+        assert is_real is False
+        assert "cs2_import" in dest

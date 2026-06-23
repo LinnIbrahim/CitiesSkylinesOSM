@@ -71,6 +71,20 @@ python generate_server.py --no-elevation   # faster (flat terrain)
   `None` for vanilla/region-neutral output.
 - Output JSON (`selection_full.json`, `selection_chunks.json`) is written to
   `data/processed/`.
+- **Import to Cities: Skylines 2** — after generating, tick the options
+  (unlimited money, unlock all, all map tiles, enable mods) and click
+  **Import into CS2 folder**. The files are copied to the
+  `DynamicCityLoader/data` mod folder along with an `import_manifest.json` that
+  the mod reads on load.
+
+> Set `CS2_MODS_DIR` to your Cities: Skylines II `Mods` folder so Import
+> targets the game directly; otherwise files go to a local `data/cs2_import/`
+> staging folder for you to copy in manually.
+>
+> **Why unlimited money / unlock all:** a 1:1 real-world city is huge, and
+> pegged finances drain on road upkeep before you can build anything — so the
+> import defaults these on. **Map tiles:** the base game caps the purchasable
+> area below a full map, so playing the whole import needs a tiles-unlock mod.
 
 #### Option B — Command line
 
@@ -79,7 +93,8 @@ python python/main.py --city "City Name"
 python python/main.py --bbox "south,west,north,east" --theme european
 ```
 
-Then preview an existing result on a map:
+Then preview an existing result on a map (the preview also has the same
+**Import into CS2 folder** button as the generator):
 
 ```bash
 python python/preview_server.py      # auto-finds the latest *_full.json

@@ -437,6 +437,7 @@ class CS2Converter:
                     "oneWay":        road["oneway"],
                     "speedLimit":    self._parse_speed(road["maxspeed"]),
                     "priority":      road["priority"],
+                    "utilities":     klass["utilities"],
                 }
                 if klass["clamped"]:
                     entry["clamped"] = True
@@ -451,6 +452,11 @@ class CS2Converter:
 
         return cs2_roads
 
+    # CS2 surface roads carry water, sewage and electricity underground by
+    # default; highways (and pedestrian paths) do not, so any zoning served
+    # only by these needs standalone utilities placed separately.
+    NO_UTILITY_ROADS = {"Highway"}
+
     def classify_road(self, road: Dict[str, Any]) -> Dict[str, Any]:
         """
         Choose the CS2 road type from the OSM class, lane count and width.
@@ -461,43 +467,43 @@ class CS2Converter:
           lanes           effective lane count (clamped for surface roads)
           clamped         True if lanes exceeded the vanilla CS2 ceiling
           original_lanes  the pre-clamp lane count (only meaningful if clamped)
+          utilities       True if the type auto-provides water/sewage/power
         """
         osm_type = road["type"]
         lanes    = road.get("lanes", 2)
+        original = lanes
 
         # Pedestrian / non-vehicle ways become CS2 pathways.
         if osm_type in self.PEDESTRIAN_OSM_TYPES:
-            return {"type": "Pathway", "category": "pedestrian",
-                    "lanes": 1, "clamped": False, "original_lanes": lanes}
+            cs2_type, category, eff, clamped = "Pathway", "pedestrian", 1, False
+        elif osm_type == "alley":
+            cs2_type, category, eff, clamped = "Alley", "vehicle", 1, False
+        elif osm_type in ("motorway", "trunk"):
+            # Motorway-grade roads use the dedicated Highway type. Lanes clamp.
+            clamped  = lanes > self.MAX_SURFACE_LANES
+            cs2_type, category = "Highway", "vehicle"
+            eff      = min(lanes, self.MAX_SURFACE_LANES)
+        else:
+            # Surface roads: narrowest ladder type that fits, clamped at max.
+            clamped  = lanes > self.MAX_SURFACE_LANES
+            eff      = min(lanes, self.MAX_SURFACE_LANES)
+            category = "vehicle"
+            cs2_type = self.SURFACE_LANE_LADDER[-1][1]
+            for threshold, name in self.SURFACE_LANE_LADDER:
+                if eff <= threshold:
+                    cs2_type = name
+                    break
+            # Respect the legacy class hint when wider than the lane-derived
+            # type (a sparsely-tagged primary should not collapse to TinyRoad).
+            hint = self.ROAD_TYPE_MAP.get(osm_type)
+            if hint and self._road_rank(hint) > self._road_rank(cs2_type):
+                cs2_type = hint
 
-        if osm_type == "alley":
-            return {"type": "Alley", "category": "vehicle",
-                    "lanes": 1, "clamped": False, "original_lanes": lanes}
+        utilities = category == "vehicle" and cs2_type not in self.NO_UTILITY_ROADS
 
-        # Motorway-grade roads use the dedicated Highway type. Lanes still clamp.
-        if osm_type in ("motorway", "trunk"):
-            clamped = lanes > self.MAX_SURFACE_LANES
-            return {"type": "Highway", "category": "vehicle",
-                    "lanes": min(lanes, self.MAX_SURFACE_LANES),
-                    "clamped": clamped, "original_lanes": lanes}
-
-        # Surface roads: pick the narrowest ladder type that fits, clamp at max.
-        clamped = lanes > self.MAX_SURFACE_LANES
-        eff = min(lanes, self.MAX_SURFACE_LANES)
-        cs2_type = self.SURFACE_LANE_LADDER[-1][1]
-        for threshold, name in self.SURFACE_LANE_LADDER:
-            if eff <= threshold:
-                cs2_type = name
-                break
-
-        # Respect the legacy class hint when it is wider than the lane-derived
-        # type (e.g. a sparsely-tagged primary should not collapse to TinyRoad).
-        hint = self.ROAD_TYPE_MAP.get(osm_type)
-        if hint and self._road_rank(hint) > self._road_rank(cs2_type):
-            cs2_type = hint
-
-        return {"type": cs2_type, "category": "vehicle", "lanes": eff,
-                "clamped": clamped, "original_lanes": lanes}
+        return {"type": cs2_type, "category": category, "lanes": eff,
+                "clamped": clamped, "original_lanes": original,
+                "utilities": utilities}
 
     # Width ordering of CS2 surface road types, for "widest wins" comparisons.
     _ROAD_RANK = ["Alley", "TinyRoad", "SmallRoad", "MediumRoad",
@@ -649,10 +655,12 @@ class CS2Converter:
         """
         Convert stops and routes to CS2 format.
 
-        External stops (intercity route endpoints that lie outside the
-        map boundary) are pinned to the nearest point on the map edge so
-        the CS2 mod can place a visible "external connection" marker
-        rather than dropping the endpoint entirely.
+        CS2 transport lines are closed loops with no external connections, so
+        edge stops are not supported for any mode: stops beyond the map boundary
+        are dropped, and a line that reaches the boundary is cut off there and
+        loops back through its remaining in-map stops (flagged ``loop`` /
+        ``cut_at_edge``). Lines left with fewer than two in-map stops are
+        dropped entirely.
         """
         cs2_stops:  List[Dict[str, Any]] = []
         cs2_routes: List[Dict[str, Any]] = []
@@ -668,11 +676,13 @@ class CS2Converter:
             is_ext = stop.get("is_external", False)
 
             if is_ext:
-                position = self._clamp_to_map_edge(lat, lon, elev)
-            else:
-                if not self.transformer.in_bounds(lat, lon):
-                    continue  # entirely outside — shouldn't happen after filtering
-                position = self.transformer.to_cs2(lat, lon, elev)
+                # Edge stops are not supported for any mode: a line that reaches
+                # the map boundary is cut off there and loops back, so its
+                # external endpoint is dropped rather than placed at the edge.
+                continue
+            if not self.transformer.in_bounds(lat, lon):
+                continue  # entirely outside — shouldn't happen after filtering
+            position = self.transformer.to_cs2(lat, lon, elev)
 
             cs2_stops.append({
                 "id":            f"stop_{stop['id']}",
@@ -693,12 +703,20 @@ class CS2Converter:
             route_type = route["route_type"]
             cs2_type   = self.TRANSIT_TYPE_MAP.get(route_type, "BusLine")
 
-            # Ordered list of stop IDs that exist in our converted stop set
+            # Ordered list of stop IDs that exist in our converted stop set.
+            # (External bus stops were dropped above, so they fall out here.)
             route_stops = [
                 f"stop_{sid}"
                 for sid in route.get("stop_ids", [])
                 if f"stop_{sid}" in stop_id_set
             ]
+
+            # Every CS2 transport line is a closed loop with no external
+            # connection. A line needs at least two in-map stops; if it reached
+            # the boundary its edge stops were dropped and it loops back through
+            # the remaining in-map stops.
+            if len(route_stops) < 2:
+                continue  # too few in-map stops to form a usable line
 
             # Fare: use OSM data if present, else defaults for this route type
             osm_fare  = route.get("fare")
@@ -716,7 +734,7 @@ class CS2Converter:
                 fare["source_currency"] = real_currency
             fare["currency"] = self.GAME_CURRENCY
 
-            cs2_routes.append({
+            entry = {
                 "id":          f"route_{route['id']}",
                 "name":        route["name"],
                 "number":      route["ref"],
@@ -729,25 +747,80 @@ class CS2Converter:
                 "is_intercity":route.get("is_intercity", False),
                 "stops":       route_stops,
                 "fare":        fare,
-            })
+            }
+            entry["loop"] = True                  # CS2 transport lines are loops
+            if route.get("is_intercity"):
+                entry["cut_at_edge"] = True       # edge stops dropped; loops back
+            cs2_routes.append(entry)
 
         return {"stops": cs2_stops, "routes": cs2_routes}
 
-    def _clamp_to_map_edge(
-        self, lat: float, lon: float, elev: float
-    ) -> Dict[str, float]:
-        """
-        For external stops that lie beyond the CS2 map boundary, pin them
-        to the nearest point on the map edge at the same bearing.
+    # ------------------------------------------------------------------
+    # Outside connections
+    # ------------------------------------------------------------------
 
-        This gives the CS2 mod a valid in-map anchor for route endpoints.
+    # CS2 network types that link to the world beyond the map edge.
+    OUTSIDE_CONNECTION_WATER = {"River", "Canal"}
+
+    def find_outside_connections(
+        self, cs2_data: Dict[str, Any], tolerance: float = 50.0
+    ) -> List[Dict[str, Any]]:
         """
-        x, z    = self.transformer._xz(lat, lon)
-        half    = self.transformer.CS2_HALF_MAP
-        # Clamp to [-half, +half] in both axes
-        cx = max(-half, min(half, x))
-        cz = max(-half, min(half, z))
-        return {"x": round(cx, 2), "y": round(elev, 2), "z": round(cz, 2)}
+        Detect where highway, rail and navigable-waterway networks reach the CS2
+        map edge and emit an outside-connection marker at each crossing.
+
+        A city smaller than the map still needs these so highways, trains and
+        ships can connect to the world outside the map. Only networks that can
+        actually carry an outside connection qualify: highways (not surface
+        roads), surface heavy rail (not subway/tram), and rivers/canals.
+        """
+        half = self.transformer.CS2_HALF_MAP
+        conns: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        def on_edge(p: Dict[str, float]) -> bool:
+            return (abs(abs(p["x"]) - half) <= tolerance or
+                    abs(abs(p["z"]) - half) <= tolerance)
+
+        def add(kind: str, p: Dict[str, float], src_id: str, name: str) -> None:
+            # Dedup nearby crossings of the same kind (shared edge endpoints).
+            key = (kind, round(p["x"] / tolerance), round(p["z"] / tolerance))
+            if key in seen:
+                return
+            seen.add(key)
+            conns.append({
+                "id":       f"oc_{kind.lower()}_{len(conns)}",
+                "type":     kind,
+                "position": {"x": p["x"], "y": p["y"], "z": p["z"]},
+                "network":  src_id,
+                "name":     name,
+            })
+
+        def endpoints(pts):
+            return (pts[0], pts[-1]) if pts and len(pts) >= 2 else ()
+
+        for road in cs2_data.get("roads", []):
+            if road.get("type") != "Highway":
+                continue
+            for p in endpoints(road.get("points")):
+                if on_edge(p):
+                    add("Highway", p, road["id"], road.get("name", ""))
+
+        for rail in cs2_data.get("railways", []):
+            if rail.get("type") != "Train" or rail.get("is_underground"):
+                continue
+            for p in endpoints(rail.get("points")):
+                if on_edge(p):
+                    add("Train", p, rail["id"], rail.get("name", ""))
+
+        for ww in cs2_data.get("waterways", []):
+            if ww.get("isArea") or ww.get("type") not in self.OUTSIDE_CONNECTION_WATER:
+                continue
+            for p in endpoints(ww.get("points")):
+                if on_edge(p):
+                    add("Ship", p, ww["id"], ww.get("name", ""))
+
+        return conns
 
     # ------------------------------------------------------------------
     # Spatial chunking

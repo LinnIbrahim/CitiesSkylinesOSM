@@ -68,6 +68,23 @@ namespace DynamicCityLoader
             }
         }
 
+        /// <summary>Load the import manifest if present; null when absent/invalid.</summary>
+        public static ImportManifest LoadManifest(string path)
+        {
+            if (!File.Exists(path))
+                return null;
+
+            try
+            {
+                return JsonConvert.DeserializeObject<ImportManifest>(File.ReadAllText(path));
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"Failed to parse import manifest '{path}': {e.Message}");
+                return null;
+            }
+        }
+
         private static int Count<T>(List<T> list) => list?.Count ?? 0;
     }
 }

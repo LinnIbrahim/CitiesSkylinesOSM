@@ -21,6 +21,9 @@ import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
 
+sys.path.insert(0, os.path.dirname(__file__))
+from cs2_import import perform_import
+
 
 def reverse_project(x, z, lat_centre, lon_centre):
     """CS2 (x, z) → (lat, lon). Inverse of the local tangent plane projection."""
@@ -170,6 +173,22 @@ def cs2_to_geojson(cs2_data):
             },
         })
 
+    # --- Outside connections (highway/rail/ship at the map edge) ---
+    for oc in cs2_data.get("outside_connections", []):
+        pos = oc.get("position", {})
+        lat, lon = _rev(pos)
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {
+                "layer": "outside_connections",
+                "id": oc.get("id", ""),
+                "name": oc.get("name", ""),
+                "oc_type": oc.get("type", ""),
+                "network": oc.get("network", ""),
+            },
+        })
+
     # --- Transit routes (as metadata only, no geometry) ---
     route_list = []
     for route in transit.get("routes", []):
@@ -222,6 +241,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 .stat { display: flex; justify-content: space-between; padding: 2px 0; }
 .stat .label { color: #666; }
 .stat .value { font-weight: 600; }
+.opt { display:block; font-size:12px; color:#333; margin:3px 0; cursor:pointer; }
+.opt input { margin-right:6px; vertical-align:middle; }
+#importbtn { margin-top:6px; width:100%; padding:7px; border:0; border-radius:4px;
+    background:#2d8a4e; color:#fff; font-size:13px; cursor:pointer; }
+#importbtn:hover { background:#256e3f; }
+#importbtn:disabled { background:#9bbfa8; cursor:default; }
+#import-status { margin-top:8px; font-size:11px; line-height:1.4; word-break:break-all; }
+#import-status code { background:#f0f0f0; padding:1px 3px; border-radius:2px; }
 
 .layer-toggle { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
 .layer-toggle input { margin: 0; }
@@ -256,6 +283,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
     <div id="layers"></div>
     <h3>Routes</h3>
     <div id="routes-info" style="max-height:200px;overflow-y:auto;font-size:11px;"></div>
+
+    <h3>Import to Cities: Skylines 2</h3>
+    <label class="opt"><input type="checkbox" id="opt-money" checked> Unlimited money</label>
+    <label class="opt"><input type="checkbox" id="opt-unlock" checked> Unlock all</label>
+    <label class="opt"><input type="checkbox" id="opt-tiles" checked> All map tiles</label>
+    <label class="opt"><input type="checkbox" id="opt-mods" checked> Enable mods</label>
+    <button id="importbtn" onclick="importToCS2()">⬇ Import into CS2 folder</button>
+    <div id="import-status"></div>
 </div>
 
 <div id="info">
@@ -275,8 +310,11 @@ const LAYER_CONFIG = {
     waterways:     { color: '#2980b9', weight: 2,   label: 'Waterways', swatch: 'line' },
     buildings:     { color: '#9b59b6', weight: 1,   label: 'Buildings', swatch: 'polygon', fillOpacity: 0.35 },
     transit_stops: { color: '#e74c3c', weight: 0,   label: 'Stops',     swatch: 'circle', radius: 5 },
+    outside_connections: { color: '#111111', weight: 2, label: 'Outside connections', swatch: 'circle', radius: 9 },
     cs2_bounds:    { color: '#e74c3c', weight: 2,   label: 'CS2 Map Edge', swatch: 'line', dashArray: '8,6' },
 };
+
+const OC_COLORS = { Highway: '#c0392b', Train: '#2c3e50', Ship: '#2980b9' };
 
 const ROAD_COLORS = {
     Highway:   '#c0392b',
@@ -365,16 +403,20 @@ function render() {
 
         if (geom.type === 'Point') {
             const [lon, lat] = geom.coordinates;
-            const stopType = f.properties.stop_type || 'stop';
-            const color = STOP_COLORS[stopType] || STOP_COLORS.stop;
-            const radius = f.properties.is_external ? 7 : 5;
-            leafletLayer = L.circleMarker([lat, lon], {
-                radius: radius,
-                color: color,
-                fillColor: color,
-                fillOpacity: 0.8,
-                weight: f.properties.is_external ? 2 : 1,
-            });
+            if (layer === 'outside_connections') {
+                const c = OC_COLORS[f.properties.oc_type] || '#111';
+                leafletLayer = L.circleMarker([lat, lon], {
+                    radius: 9, color: '#111', fillColor: c,
+                    fillOpacity: 0.95, weight: 2,
+                });
+            } else {
+                const stopType = f.properties.stop_type || 'stop';
+                const color = STOP_COLORS[stopType] || STOP_COLORS.stop;
+                leafletLayer = L.circleMarker([lat, lon], {
+                    radius: 5, color: color, fillColor: color,
+                    fillOpacity: 0.8, weight: 1,
+                });
+            }
         } else if (geom.type === 'LineString') {
             const coords = geom.coordinates.map(c => [c[1], c[0]]);
             let color, weight;
@@ -534,6 +576,38 @@ function showInfo(props) {
     infoDiv.style.display = 'block';
 }
 
+function importToCS2() {
+    const btn = document.getElementById('importbtn');
+    btn.disabled = true;
+    setImportStatus('Importing…');
+    fetch('/api/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            options: {
+                unlimitedMoney: document.getElementById('opt-money').checked,
+                unlockAll:      document.getElementById('opt-unlock').checked,
+                allTiles:       document.getElementById('opt-tiles').checked,
+                useMods:        document.getElementById('opt-mods').checked,
+            },
+        }),
+    }).then(r => r.json()).then(d => {
+        btn.disabled = false;
+        if (d.error) { setImportStatus(d.error, true); return; }
+        const where = d.realMods
+            ? 'CS2 Mods folder'
+            : 'local staging folder (set CS2_MODS_DIR to auto-target the game)';
+        setImportStatus('✓ Copied ' + d.copied.length + ' file(s) to the ' +
+            where + ':<br><code>' + d.dest + '</code>');
+    }).catch(e => { btn.disabled = false; setImportStatus('Import failed: ' + e, true); });
+}
+
+function setImportStatus(html, isErr) {
+    const el = document.getElementById('import-status');
+    el.innerHTML = html;
+    el.style.color = isErr ? '#c0392b' : '#2e7d32';
+}
+
 document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
@@ -547,7 +621,10 @@ document.addEventListener('DOMContentLoaded', init);
 class PreviewHandler(SimpleHTTPRequestHandler):
     """Serves the preview HTML and GeoJSON API."""
 
-    geojson_data = None  # set by serve()
+    geojson_data = None     # set by serve()
+    output_dir = None       # set by serve()
+    source_files = []       # [full.json, chunks.json] relative to output_dir
+    city = "selection"      # set by serve()
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -564,6 +641,28 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(self.geojson_data).encode("utf-8"))
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/import":
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            req = {}
+        payload, status = perform_import(
+            self.output_dir or ".",
+            req.get("files") or self.source_files,
+            city=req.get("city", self.city),
+            options=req.get("options") or {},
+        )
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt, *args):
         # Suppress per-request logs
@@ -604,6 +703,14 @@ def serve(json_path, port=8000):
     print(f"  {n_features} features")
 
     PreviewHandler.geojson_data = geojson
+    PreviewHandler.output_dir = os.path.dirname(os.path.abspath(json_path))
+    PreviewHandler.city = city
+    stem = os.path.basename(json_path)[:-len("_full.json")] \
+        if json_path.endswith("_full.json") else os.path.basename(json_path)
+    chunks_name = f"{stem}_chunks.json"
+    PreviewHandler.source_files = [os.path.basename(json_path)]
+    if os.path.isfile(os.path.join(PreviewHandler.output_dir, chunks_name)):
+        PreviewHandler.source_files.append(chunks_name)
 
     server = HTTPServer(("127.0.0.1", port), PreviewHandler)
     url = f"http://127.0.0.1:{port}"
