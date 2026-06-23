@@ -36,7 +36,7 @@ from preview_server import cs2_to_geojson
 from pipeline import generate_city_data
 from cs2_converter import CoordinateTransformer
 from eu_assets import available_themes
-from cs2_import import cs2_import_target, perform_import
+from cs2_import import perform_import
 
 # CS2 playable map edge in metres (mirrors CoordinateTransformer.CS2_MAP_SIZE).
 CS2_MAP_SIZE = CoordinateTransformer.CS2_MAP_SIZE

@@ -5,7 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from generate_server import _build_page, CS2_MAP_SIZE, cs2_import_target
+from generate_server import _build_page, CS2_MAP_SIZE
+from cs2_import import cs2_import_target
 
 
 class TestBuildPage:
