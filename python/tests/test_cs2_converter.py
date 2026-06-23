@@ -185,15 +185,55 @@ class TestConvertRoads:
 # ---------------------------------------------------------------
 
 class TestConvertRailways:
-    def test_rail_type_mapping(self, converter):
+    def test_underground_subway_is_tunnel(self, converter):
         railways = [{
             "id": 10, "type": "subway", "name": "Metro 1",
             "coordinates": [(7.42, 43.73), (7.43, 43.74)],
-            "electrified": "yes", "geometry": None,
+            "electrified": "yes", "is_underground": True, "geometry": None,
         }]
         cs2 = converter.convert_railways(railways)
         assert cs2[0]["type"] == "Subway"
+        assert cs2[0]["is_underground"] is True
+        assert cs2[0]["depth_m"] == converter.TUNNEL_DEPTH_M
         assert cs2[0]["electrified"] is True
+
+    def test_surface_subway_is_commuter_train(self, converter):
+        # A subway running on the surface is treated as commuter rail.
+        railways = [{
+            "id": 11, "type": "subway", "name": "S-Bahn",
+            "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+            "electrified": "no", "is_underground": False, "geometry": None,
+        }]
+        cs2 = converter.convert_railways(railways)
+        assert cs2[0]["type"] == "Train"
+        assert cs2[0]["is_underground"] is False
+        assert cs2[0]["depth_m"] == 0.0
+
+    def test_rail_and_tram_mapping(self, converter):
+        assert converter._map_railway_type("rail") == "Train"
+        assert converter._map_railway_type("light_rail") == "Metro"
+        assert converter._map_railway_type("tram") == "Tram"
+        # Underground flag only changes subways.
+        assert converter._map_railway_type("rail", is_underground=True) == "Train"
+        assert converter._map_railway_type("subway", is_underground=True) == "Subway"
+        assert converter._map_railway_type("subway", is_underground=False) == "Train"
+
+    def test_commuter_subway_is_train_even_underground(self, converter):
+        # An underground commuter line (e.g. RER through the centre) → Train.
+        assert converter._map_railway_type(
+            "subway", is_underground=True, is_commuter=True) == "Train"
+        railways = [{
+            "id": 12, "type": "subway", "name": "RER A",
+            "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+            "electrified": "yes", "is_underground": True, "is_commuter": True,
+            "geometry": None,
+        }]
+        cs2 = converter.convert_railways(railways)
+        assert cs2[0]["type"] == "Train"
+        assert cs2[0]["is_commuter"] is True
+        # Still placed in a tunnel since it runs underground.
+        assert cs2[0]["is_underground"] is True
+        assert cs2[0]["depth_m"] == converter.TUNNEL_DEPTH_M
 
 
 # ---------------------------------------------------------------
@@ -288,7 +328,35 @@ class TestConvertTransit:
         }
         cs2 = converter.convert_transit(transit)
         assert len(cs2["routes"]) == 1
-        assert cs2["routes"][0]["fare"]["base_fare"] == 2.50
+        fare = cs2["routes"][0]["fare"]
+        assert fare["base_fare"] == 2.50
+        # Amount preserved, but currency normalised to the in-game money; the
+        # original real-world currency is kept as provenance.
+        assert fare["currency"] == converter.GAME_CURRENCY
+        assert fare["source_currency"] == "EUR"
+
+    def test_default_fare_uses_game_currency(self, converter):
+        transit = {
+            "stops": [{
+                "id": 11, "name": "B", "type": "bus",
+                "coordinates": (7.42, 43.73),
+                "is_external": False, "is_underground": False,
+                "has_shelter": False, "has_bench": False,
+                "wheelchair": "unknown",
+            }],
+            "routes": [{
+                "id": 101, "name": "Bus 2", "ref": "2",
+                "route_type": "bus", "operator": "", "colour": "",
+                "network": "", "from": "", "to": "",
+                "is_intercity": False, "stop_ids": [11],
+                "fare": None,
+            }],
+        }
+        cs2 = converter.convert_transit(transit)
+        fare = cs2["routes"][0]["fare"]
+        assert fare["currency"] == converter.GAME_CURRENCY
+        # No real-world currency was involved, so no provenance label.
+        assert "source_currency" not in fare
 
 
 # ---------------------------------------------------------------

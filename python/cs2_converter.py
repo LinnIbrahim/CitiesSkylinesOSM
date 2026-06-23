@@ -16,7 +16,7 @@ import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import LineString, Polygon, box
 
 
 # ---------------------------------------------------------------------------
@@ -286,20 +286,29 @@ class CoordinateTransformer:
 class CS2Converter:
     """Converts parsed OSM data to Cities: Skylines 2 mod format."""
 
+    # Depth (metres below terrain) at which underground tracks are placed.
+    TUNNEL_DEPTH_M = 12.0
+
+    # Cities: Skylines 2 has no real-world currency — money is a single,
+    # abstract in-game unit shown with the game's money symbol "₡".  Every
+    # fare written to the CS2 output uses this; any real-world currency read
+    # from OSM is kept only as `source_currency` provenance.
+    GAME_CURRENCY = "₡"
+
     # Default fares by route type.
-    # Used when OSM has no charge= tag.  All amounts are a sensible
-    # single-trip adult fare; the mod uses these to initialise CS2
-    # transit line ticket prices.
+    # Used when OSM has no charge= tag.  Amounts are sensible single-trip
+    # ticket prices in the in-game currency; the mod uses these to initialise
+    # CS2 transit line ticket prices.
     #
     # Override per city by passing a fare_overrides dict to __init__:
-    #   {"bus": {"base_fare": 2.00, "currency": "GBP"}, ...}
+    #   {"bus": {"base_fare": 2.00}, ...}
     TRANSIT_FARES: Dict[str, Dict] = {
-        "bus":        {"base_fare": 1.50, "day_pass": 5.00,  "currency": "EUR"},
-        "tram":       {"base_fare": 1.50, "day_pass": 5.00,  "currency": "EUR"},
-        "train":      {"base_fare": 3.50, "day_pass": 18.00, "currency": "EUR"},
-        "subway":     {"base_fare": 1.80, "day_pass": 7.00,  "currency": "EUR"},
-        "light_rail": {"base_fare": 1.80, "day_pass": 7.00,  "currency": "EUR"},
-        "ferry":      {"base_fare": 2.50, "day_pass": 10.00, "currency": "EUR"},
+        "bus":        {"base_fare": 1.50, "day_pass": 5.00,  "currency": GAME_CURRENCY},
+        "tram":       {"base_fare": 1.50, "day_pass": 5.00,  "currency": GAME_CURRENCY},
+        "train":      {"base_fare": 3.50, "day_pass": 18.00, "currency": GAME_CURRENCY},
+        "subway":     {"base_fare": 1.80, "day_pass": 7.00,  "currency": GAME_CURRENCY},
+        "light_rail": {"base_fare": 1.80, "day_pass": 7.00,  "currency": GAME_CURRENCY},
+        "ferry":      {"base_fare": 2.50, "day_pass": 10.00, "currency": GAME_CURRENCY},
     }
 
     # Road-type → CS2 prefab name
@@ -356,8 +365,10 @@ class CS2Converter:
             elevation_data: {(lat, lon): metres} from the elevation fetcher.
             output_dir:     Where to write JSON output files.
             fare_overrides: Per-route-type fare overrides, e.g.
-                            {"bus": {"base_fare": 2.00, "currency": "GBP"}}.
-                            Merged on top of TRANSIT_FARES defaults.
+                            {"bus": {"base_fare": 2.00, "day_pass": 7.00}}.
+                            Merged on top of TRANSIT_FARES defaults. Amounts are
+                            in the CS2 in-game currency; any currency label is
+                            normalised to the game money symbol on output.
         """
         self.transformer    = CoordinateTransformer(bbox)
         self.elevations     = elevation_data or {}
@@ -413,17 +424,26 @@ class CS2Converter:
         cs2_railways = []
 
         for rail in railways:
+            is_underground = rail.get("is_underground", False)
+            is_commuter    = rail.get("is_commuter", False)
+            cs2_type       = self._map_railway_type(
+                rail["type"], is_underground, is_commuter
+            )
             segments = self.transformer.clip_and_convert_line(
                 rail["coordinates"], self.elevations
             )
             for idx, seg in enumerate(segments):
                 seg_id = f"rail_{rail['id']}" if len(segments) == 1 else f"rail_{rail['id']}_{idx}"
                 cs2_railways.append({
-                    "id":          seg_id,
-                    "type":        self._map_railway_type(rail["type"]),
-                    "name":        rail["name"],
-                    "points":      seg,
-                    "electrified": rail.get("electrified") == "yes",
+                    "id":             seg_id,
+                    "type":           cs2_type,
+                    "name":           rail["name"],
+                    "points":         seg,
+                    "electrified":    rail.get("electrified") == "yes",
+                    "is_underground": is_underground,
+                    "is_commuter":    is_commuter,
+                    # Depth below terrain for the mod to sink a tunnel (metres).
+                    "depth_m":        self.TUNNEL_DEPTH_M if is_underground else 0.0,
                 })
 
         return cs2_railways
@@ -595,6 +615,14 @@ class CS2Converter:
                 fare = {**fare_defaults, **osm_fare}
             else:
                 fare = {**fare_defaults, "source": "default"}
+
+            # CS2 has only one in-game currency.  Keep the numeric amount but
+            # normalise the label, recording any real-world currency from OSM
+            # as provenance rather than emitting it as the fare currency.
+            real_currency = fare.get("currency")
+            if real_currency and real_currency != self.GAME_CURRENCY:
+                fare["source_currency"] = real_currency
+            fare["currency"] = self.GAME_CURRENCY
 
             cs2_routes.append({
                 "id":          f"route_{route['id']}",
@@ -878,10 +906,29 @@ class CS2Converter:
         except (ValueError, IndexError):
             return 50
 
-    def _map_railway_type(self, osm_type: str) -> str:
+    def _map_railway_type(
+        self,
+        osm_type: str,
+        is_underground: bool = False,
+        is_commuter: bool = False,
+    ) -> str:
+        """
+        Map an OSM railway type to a CS2 track type.
+
+        Commuter / regional services (S-Bahn, RER, Cercanías, …) are detected
+        by name and become CS2 Train tracks even when OSM tags them as subway —
+        they still get a tunnel if they run underground (via is_underground).
+
+        Otherwise subways are contextual: an underground subway becomes a CS2
+        Subway (in a tunnel), while a surface subway is treated as commuter
+        rail → a CS2 Train track.
+        """
+        if is_commuter and osm_type != "tram":
+            return "Train"
+        if osm_type == "subway":
+            return "Subway" if is_underground else "Train"
         return {
             "rail":       "Train",
             "light_rail": "Metro",
-            "subway":     "Subway",
             "tram":       "Tram",
         }.get(osm_type, "Train")

@@ -131,6 +131,32 @@ class TestParseRailways:
         railways = parser.parse_railways(result)
         assert railways[0]["type"] == "tram"
 
+    def test_railway_underground_flag(self, parser):
+        nodes = _make_way_nodes([(7.4, 43.7), (7.41, 43.71)])
+        ug = _mock_way(202, nodes, {"railway": "subway", "tunnel": "yes"})
+        surface = _mock_way(203, nodes, {"railway": "subway"})
+        result = _mock_result(ways=[ug, surface])
+
+        railways = parser.parse_railways(result)
+        by_id = {r["id"]: r for r in railways}
+        assert by_id[202]["is_underground"] is True
+        assert by_id[203]["is_underground"] is False
+
+    def test_commuter_rail_detection(self, parser):
+        assert parser._is_commuter_rail({"network": "S-Bahn Berlin"}) is True
+        assert parser._is_commuter_rail({"name": "RER A"}) is True
+        assert parser._is_commuter_rail({"network": "Cercanías Madrid"}) is True
+        assert parser._is_commuter_rail({"name": "Rodalies"}) is True
+        # A real metro must NOT be flagged as commuter.
+        assert parser._is_commuter_rail({"network": "U-Bahn", "name": "U6"}) is False
+        assert parser._is_commuter_rail({"name": "Line 1"}) is False
+
+    def test_commuter_flag_on_parsed_railway(self, parser):
+        nodes = _make_way_nodes([(7.4, 43.7), (7.41, 43.71)])
+        way = _mock_way(204, nodes, {"railway": "subway", "network": "S-Bahn"})
+        railways = parser.parse_railways(_mock_result(ways=[way]))
+        assert railways[0]["is_commuter"] is True
+
 
 # ---------------------------------------------------------------
 # get_underground_way_ids

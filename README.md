@@ -52,14 +52,43 @@ pip install -r python/requirements.txt
 
 ### Usage
 
-1. Fetch and process OSM data:
+#### Option A — Interactive generator (recommended)
+
+Launch the browser-based selector, **drag the red box** (locked to the
+Cities: Skylines 2 map size, 57.3 × 57.3 km) over the area you want on the real
+OpenStreetMap, then click **Generate**. The server fetches live OSM data and
+transforms roads, terrain, transit stops and buildings into European-themed
+CS2 assets, drawing the converted result straight back on the map.
+
 ```bash
-python python/main.py --city "City Name" --bbox "lat1,lon1,lat2,lon2"
+cd python
+python generate_server.py            # opens http://127.0.0.1:8001
+python generate_server.py --no-elevation   # faster (flat terrain)
 ```
 
-2. Install mod in CS2 mods folder
+- **Map size** — pick the full CS2 map or a half/quarter selection.
+- **Theme** — `European` (default) tags every asset with its EU prefab, or
+  `None` for vanilla/region-neutral output.
+- Output JSON (`selection_full.json`, `selection_chunks.json`) is written to
+  `data/processed/`.
 
-3. Load city in-game
+#### Option B — Command line
+
+```bash
+python python/main.py --city "City Name"
+python python/main.py --bbox "south,west,north,east" --theme european
+```
+
+Then preview an existing result on a map:
+
+```bash
+python python/preview_server.py      # auto-finds the latest *_full.json
+```
+
+#### Install & play
+
+1. Install the mod in the CS2 mods folder
+2. Load the city in-game
 
 ## Status
 

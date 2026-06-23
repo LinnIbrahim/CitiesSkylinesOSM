@@ -7,10 +7,29 @@ import json
 import os
 import re
 import time
+import urllib.request
 from typing import Dict, List, Optional, Tuple
 
 import overpy
 import requests
+
+USER_AGENT = "MapToSkylines2/0.1 (OSM to Cities: Skylines 2 converter)"
+
+
+def _install_user_agent():
+    """
+    overpy issues its Overpass requests via ``urllib.urlopen`` with no
+    User-Agent, so they go out as ``Python-urllib/x.y`` — which the public
+    overpass-api.de instance now rejects with HTTP 406.  Install a global
+    urllib opener that sends a proper User-Agent so overpy's requests succeed.
+    (``requests`` — used for Nominatim/elevation — already sets its own UA.)
+    """
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", USER_AGENT)]
+    urllib.request.install_opener(opener)
+
+
+_install_user_agent()
 
 
 class OSMFetcher:
@@ -19,6 +38,7 @@ class OSMFetcher:
     def __init__(self, cache_dir: str = "../data/osm"):
         self.api       = overpy.Overpass()
         self.cache_dir = cache_dir
+        self._log      = print   # progress sink; overridden per-fetch
         os.makedirs(cache_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -107,6 +127,7 @@ class OSMFetcher:
         self,
         bbox: Tuple[float, float, float, float],
         features: Optional[List[str]] = None,
+        log=None,
     ) -> dict:
         """
         Fetch OSM data for a bounding box.
@@ -115,7 +136,13 @@ class OSMFetcher:
             bbox:     (south, west, north, east)
             features: Subset of ["roads", "railways", "waterways", "bus", "tram", "train", "buildings"].
                       Defaults to all.
+            log:      Optional progress callback (defaults to print). Each
+                      sub-fetch reports through it so callers can stream
+                      progress to a UI.
         """
+        if log is not None:
+            self._log = log
+
         if features is None:
             features = ["roads", "railways", "waterways", "bus", "tram", "train", "buildings"]
 
@@ -124,26 +151,26 @@ class OSMFetcher:
         results  = {}
 
         if "roads" in features:
-            print("Fetching roads...")
+            self._log("Fetching roads…")
             results["roads"] = self._fetch_roads(bbox_str)
-            time.sleep(2)
+            time.sleep(1)
 
         if "railways" in features:
-            print("Fetching railways...")
+            self._log("Fetching tram & train tracks…")
             results["railways"] = self._fetch_railways(bbox_str)
-            time.sleep(2)
+            time.sleep(1)
 
         if "waterways" in features:
-            print("Fetching waterways...")
+            self._log("Fetching waterways…")
             results["waterways"] = self._fetch_waterways(bbox_str)
-            time.sleep(2)
+            time.sleep(1)
 
         if any(f in features for f in ["bus", "tram", "train"]):
-            print("Fetching public transport...")
+            self._log("Fetching public transport…")
             results["transit"] = self._fetch_public_transport(bbox_str, features)
 
         if "buildings" in features:
-            print("Fetching buildings...")
+            self._log("Fetching buildings…")
             results["buildings"] = self._fetch_buildings(bbox_str)
 
         return results
@@ -258,15 +285,14 @@ class OSMFetcher:
 
         for attempt in range(max_retries):
             try:
-                print(f"  Attempt {attempt + 1}/{max_retries}...")
                 return self.api.query(query)
             except RETRIABLE as e:
                 if attempt < max_retries - 1:
                     wait = (2 ** attempt) * 10  # 10, 20, 40 s
-                    print(f"  Retryable error ({type(e).__name__}) — waiting {wait}s…")
+                    self._log(f"  Overpass busy ({type(e).__name__}) — retrying in {wait}s…")
                     time.sleep(wait)
                 else:
-                    print("  Max retries reached.")
+                    self._log("  Overpass: max retries reached.")
                     raise
             except Exception:
                 # Non-retriable (syntax error, data error, etc.) — fail fast
@@ -279,6 +305,7 @@ class OSMFetcher:
     def fetch_elevation(
         self,
         coords: List[Tuple[float, float]],
+        log=None,
     ) -> Dict[Tuple[float, float], float]:
         """
         Fetch terrain elevation (metres) for a list of (lat, lon) coordinates.
@@ -289,10 +316,14 @@ class OSMFetcher:
 
         Args:
             coords: [(lat, lon), …]
+            log:    Optional progress callback (defaults to print).
 
         Returns:
             {(lat_rounded, lon_rounded): elevation_metres}
         """
+        if log is not None:
+            self._log = log
+
         unique = list({(round(lat, 6), round(lon, 6)) for lat, lon in coords})
 
         if not unique:
@@ -314,23 +345,24 @@ class OSMFetcher:
 
         MAX_POINTS = 2_000
         if len(to_fetch) > MAX_POINTS:
-            print(
-                f"  Elevation: {len(to_fetch)} unique points — "
-                f"sampling {MAX_POINTS} evenly."
+            self._log(
+                f"  Terrain: {len(to_fetch)} points — sampling {MAX_POINTS} evenly."
             )
             step     = len(to_fetch) / MAX_POINTS
             to_fetch = [to_fetch[int(i * step)] for i in range(MAX_POINTS)]
 
         if to_fetch:
-            print(
-                f"  Fetching elevation for {len(to_fetch)} points "
-                f"({len(unique) - len(to_fetch)} already cached)…"
-            )
             batch_size = 100
+            n_batches  = (len(to_fetch) + batch_size - 1) // batch_size
+            self._log(
+                f"  Sampling terrain elevation: {len(to_fetch)} points "
+                f"in {n_batches} batch(es)…"
+            )
             for i in range(0, len(to_fetch), batch_size):
                 batch     = to_fetch[i : i + batch_size]
                 locations = "|".join(f"{lat},{lon}" for lat, lon in batch)
                 url       = f"https://api.opentopodata.org/v1/srtm30m?locations={locations}"
+                batch_no  = i // batch_size + 1
 
                 try:
                     resp = requests.get(url, timeout=30)
@@ -347,19 +379,19 @@ class OSMFetcher:
                             except (KeyError, TypeError, ValueError):
                                 pass  # skip malformed individual result
                     else:
-                        print(f"  Elevation API {resp.status_code} — skipping batch.")
+                        self._log(f"  Elevation API {resp.status_code} — skipping batch.")
                 except requests.RequestException as e:
-                    print(f"  Elevation fetch error: {e} — skipping batch.")
+                    self._log(f"  Elevation fetch error: {e} — skipping batch.")
 
+                self._log(f"  Terrain batch {batch_no}/{n_batches} done")
                 if i + batch_size < len(to_fetch):
                     time.sleep(1.1)  # respect 1 req/s rate limit
 
             try:
                 with open(cache_path, "w", encoding="utf-8") as f:
                     json.dump(cache, f)
-                print(f"  Elevation cache saved ({len(cache)} entries).")
             except OSError as e:
-                print(f"  Warning: could not save elevation cache: {e}")
+                self._log(f"  Warning: could not save elevation cache: {e}")
 
         result: Dict[Tuple[float, float], float] = {}
         for lat, lon in unique:

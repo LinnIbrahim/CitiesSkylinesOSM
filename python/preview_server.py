@@ -19,7 +19,7 @@ import os
 import sys
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 
 def reverse_project(x, z, lat_centre, lon_centre):
@@ -58,6 +58,8 @@ def cs2_to_geojson(cs2_data):
                 "id": road.get("id", ""),
                 "name": road.get("name", ""),
                 "cs2_type": road.get("type", ""),
+                "eu_prefab": road.get("eu_prefab", ""),
+                "theme": road.get("theme", ""),
                 "lanes": road.get("lanes", 0),
                 "oneWay": road.get("oneWay", False),
                 "speedLimit": road.get("speedLimit", 0),
@@ -79,6 +81,10 @@ def cs2_to_geojson(cs2_data):
                 "id": rail.get("id", ""),
                 "name": rail.get("name", ""),
                 "cs2_type": rail.get("type", ""),
+                "eu_prefab": rail.get("eu_prefab", ""),
+                "theme": rail.get("theme", ""),
+                "is_underground": rail.get("is_underground", False),
+                "is_commuter": rail.get("is_commuter", False),
                 "electrified": rail.get("electrified", False),
             },
         })
@@ -132,6 +138,8 @@ def cs2_to_geojson(cs2_data):
                 "zone": bldg.get("zone", ""),
                 "density": bldg.get("density", ""),
                 "cs2_subtype": bldg.get("cs2_subtype", ""),
+                "eu_prefab": bldg.get("eu_prefab", ""),
+                "theme": bldg.get("theme", ""),
                 "height": bldg.get("height", 0),
                 "levels": bldg.get("levels", 0),
                 "material": bldg.get("material", ""),
@@ -153,6 +161,8 @@ def cs2_to_geojson(cs2_data):
                 "id": stop.get("id", ""),
                 "name": stop.get("name", ""),
                 "stop_type": stop.get("type", ""),
+                "eu_prefab": stop.get("eu_prefab", ""),
+                "theme": stop.get("theme", ""),
                 "is_external": stop.get("is_external", False),
                 "is_underground": stop.get("is_underground", False),
                 "has_shelter": stop.get("has_shelter", False),

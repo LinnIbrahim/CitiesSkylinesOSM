@@ -18,6 +18,9 @@
 - [x] Clipping: cities larger than 57 344 m use Shapely intersection to clip at map edge
 - [x] Refine road type mapping to CS2 equivalents
 - [x] Create spatial chunking algorithm (grid-based, configurable cell size)
+- [x] European asset theme (roads, railways, buildings, transit, terrain/climate)
+- [x] Interactive web generator: drag a CS2-map-sized box over OSM, Generate on demand
+- [x] Shared `generate_city_data` pipeline used by both the CLI and the web generator
 
 ### CS2 Mod Side
 - [ ] Set up proper C# project with CS2 SDK

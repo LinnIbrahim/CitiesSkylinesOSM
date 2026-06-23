@@ -48,4 +48,4 @@ jobs:
 
       - name: Check for syntax errors and undefined names
         working-directory: python
-        run: pyflakes osm_fetcher.py osm_parser.py cs2_converter.py main.py preview_server.py
+        run: pyflakes osm_fetcher.py osm_parser.py cs2_converter.py main.py preview_server.py eu_assets.py pipeline.py generate_server.py

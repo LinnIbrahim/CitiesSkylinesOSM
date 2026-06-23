@@ -69,16 +69,62 @@ class OSMParser:
                 continue
 
             railways.append({
-                "id":          way.id,
-                "type":        railway_type,
-                "name":        way.tags.get("name", ""),
-                "gauge":       way.tags.get("gauge", ""),
-                "electrified": way.tags.get("electrified", ""),
-                "coordinates": coords,
-                "geometry":    LineString(self._dedup_coords(coords)),
+                "id":             way.id,
+                "type":           railway_type,
+                "name":           way.tags.get("name", ""),
+                "network":        way.tags.get("network", ""),
+                "gauge":          way.tags.get("gauge", ""),
+                "electrified":    way.tags.get("electrified", ""),
+                "is_underground": self._way_is_underground(way.tags),
+                "is_commuter":    self._is_commuter_rail(way.tags),
+                "coordinates":    coords,
+                "geometry":       LineString(self._dedup_coords(coords)),
             })
 
         return railways
+
+    # Commuter / regional rail networks that OSM frequently tags as subway
+    # (or that run in tunnels downtown) but behave like trains: S-Bahn (DE/AT/CH),
+    # RER (FR), Cercanías (ES), Rodalies (CA), Overground (UK), etc.
+    # Note: "U-Bahn" deliberately does NOT match — it is a true metro/subway.
+    _COMMUTER_RE = re.compile(
+        r"\b("
+        r"s[-\s]?bahn|rer|cercan[ií]as|rodalies|overground|cityrail|"
+        r"regional(?:bahn|zug)?|commuter|treno\s+regionale|train\s+de\s+banlieue"
+        r")\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_commuter_rail(cls, tags: dict) -> bool:
+        """
+        True when a railway's name/network/operator marks it as a commuter or
+        regional service (S-Bahn, RER, Cercanías, …) rather than a city metro.
+        """
+        haystack = " ".join(
+            str(tags.get(k, ""))
+            for k in ("name", "network", "operator", "ref", "line", "route_name")
+        )
+        return bool(cls._COMMUTER_RE.search(haystack))
+
+    @staticmethod
+    def _way_is_underground(tags: dict) -> bool:
+        """
+        True when a way runs underground / in a tunnel.
+
+        Any of: tunnel=yes, location=underground, layer<0, covered=yes.
+        """
+        layer = 0
+        try:
+            layer = int(tags.get("layer", "0") or "0")
+        except ValueError:
+            pass
+        return (
+            tags.get("tunnel") == "yes"
+            or tags.get("location") == "underground"
+            or layer < 0
+            or tags.get("covered") == "yes"
+        )
 
     # ------------------------------------------------------------------
     # Underground way detection  (call on the railway OSM result)
@@ -96,19 +142,7 @@ class OSMParser:
         """
         underground = set()
         for way in railway_result.ways:
-            tags  = way.tags
-            layer = 0
-            try:
-                layer = int(tags.get("layer", "0") or "0")
-            except ValueError:
-                pass
-
-            if (
-                tags.get("tunnel") == "yes"
-                or tags.get("location") == "underground"
-                or layer < 0
-                or tags.get("covered") == "yes"
-            ):
+            if self._way_is_underground(way.tags):
                 underground.add(way.id)
         return underground
 
@@ -745,7 +779,7 @@ class OSMParser:
 
     # Maps non-ASCII currency symbols AND 3-letter ISO codes to their ISO code
     _CURRENCY_SYMBOLS: Dict[str, str] = {
-        "€": "EUR", "£": "GBP", "$": "USD", "¥": "JPY", "¥": "CNY",
+        "€": "EUR", "£": "GBP", "$": "USD", "¥": "JPY",
         "CHF": "CHF", "NOK": "NOK", "SEK": "SEK", "DKK": "DKK",
         "CZK": "CZK", "PLN": "PLN", "HUF": "HUF", "RON": "RON",
         "RUB": "RUB", "JPY": "JPY", "CNY": "CNY", "AUD": "AUD",
