@@ -32,7 +32,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(__file__))
 
 from osm_fetcher import OSMFetcher
-from preview_server import cs2_to_geojson
+from preview_server import cs2_to_geojson, HTML_TEMPLATE as PREVIEW_HTML
 from pipeline import generate_city_data
 from cs2_converter import CoordinateTransformer
 from eu_assets import available_themes
@@ -162,6 +162,9 @@ button.sec:hover { background: #ddd; }
 .stat { display: flex; justify-content: space-between; padding: 2px 0; }
 .stat .label { color: #666; } .stat .value { font-weight: 600; }
 #status { margin-top: 10px; font-size: 12px; min-height: 16px; }
+#viewbtn { width:100%; margin:8px 0; padding:8px; border:0; border-radius:4px;
+    background:#2d8a4e; color:#fff; font-size:13px; cursor:pointer; }
+#viewbtn:hover { background:#256e3f; }
 .opt { display:block; font-size:12px; color:#333; margin:3px 0; cursor:pointer; }
 .opt input { margin-right:6px; vertical-align:middle; }
 #import-status { margin-top:8px; font-size:11px; line-height:1.4; word-break:break-all; }
@@ -253,6 +256,7 @@ button.danger:hover { background: #a83224; }
     <div id="results" style="display:none">
         <h3>Result</h3>
         <div id="stats"></div>
+        <button id="viewbtn" onclick="window.open('/view','_blank')">🔍 Open full visualization ↗</button>
 
         <h3>Import to Cities: Skylines 2</h3>
         <label class="opt"><input type="checkbox" id="opt-money" checked> Unlimited money</label>
@@ -618,17 +622,27 @@ class GenerateHandler(BaseHTTPRequestHandler):
 
     options: dict = {}
     page_html: str = ""
+    last_geojson: dict = None   # set after each successful generate
 
     # -- page --------------------------------------------------------------
+    def _send_html(self, html: str):
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
-            body = self.page_html.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_html(self.page_html)
+        elif parsed.path == "/view":
+            # The rich layered viewer (same one the preview server uses),
+            # showing the most recently generated city.
+            self._send_html(PREVIEW_HTML)
+        elif parsed.path == "/api/geojson":
+            self._send_json(self.last_geojson or {"features": [], "_meta": {}})
         elif parsed.path == "/api/generate":
             self._handle_generate_sse(parse_qs(parsed.query))
         else:
@@ -668,9 +682,13 @@ class GenerateHandler(BaseHTTPRequestHandler):
             return
 
         output_dir = self.options.get("output_dir", "../data/processed")
+        # Default to the files the generator just saved (the /view page's import
+        # button sends options only).
+        default_files = [f for f in ("selection_full.json", "selection_chunks.json")
+                         if os.path.isfile(os.path.join(output_dir, f))]
         payload, status = perform_import(
             output_dir,
-            req.get("files") or [],
+            req.get("files") or default_files,
             city=req.get("city", "selection"),
             options=req.get("options") or {},
         )
@@ -745,8 +763,10 @@ class GenerateHandler(BaseHTTPRequestHandler):
                     files = [f"{stem}_full.json", f"{stem}_chunks.json"]
                 tee.flush()
 
+            geojson = cs2_to_geojson(cs2_data)
+            GenerateHandler.last_geojson = geojson  # served at /view & /api/geojson
             self._sse({
-                "geojson": cs2_to_geojson(cs2_data),
+                "geojson": geojson,
                 "counts":  result["counts"],
                 "theme":   theme,
                 "files":   files,
