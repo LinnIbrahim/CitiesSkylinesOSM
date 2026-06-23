@@ -32,6 +32,9 @@
 #### Waterways
 - Rivers, streams, canals, lakes, reservoirs and coastline, with area polygons
   flagged via `isArea`.
+- Each waterway carries a **width** (explicit OSM width, else per-type default)
+  and a **depth** for the in-game water sim. `--min-waterway-width` drops
+  narrow ditches/drains so dense farmland doesn't render as endless rivers.
 
 #### Buildings
 - Footprint extraction with height/levels estimation, zone + **density**
@@ -48,6 +51,11 @@
   alley) fill missing/generic tags; footways/alleys route to a CS2 pathway.
 - Numbered-route **refs** (A12, N15) carried through with a class-based shield
   colour.
+- **Bike infrastructure**: dedicated cycle paths (`highway=cycleway`, now
+  fetched) become a CS2 `BikePath`; on-road cycle lanes (`cycleway*` tags) set a
+  `bike_lane` (lane/track/shared) so the road's bike-lane variant is used.
+- **Trams**: dedicated `railway=tram` stays a CS2 Tram track; tram rails embedded
+  in a road (`embedded_rails`/`tram=yes`) set `tram: true` → a tram-upgraded road.
 - Each road carries a **`utilities`** flag: CS2 surface roads auto-provide
   water/sewage/electricity underground, but highways (and pedestrian paths) do
   not — so the mod knows which zoning needs standalone utilities placed
@@ -75,7 +83,8 @@
 - `generate_server.py` serves a browser UI: drag a CS2-map-sized box over live
   OpenStreetMap, click **Generate**, and the converted roads/transit/buildings
   are drawn straight back on the map. `preview_server.py` re-renders the latest
-  result.
+  result, showing **one layer at a time** (radio selection, lazily built) so
+  full-size maps stay responsive, plus an "All layers" option.
 
 ### Tooling
 - Unit test suite across fetcher, parser, converter, eu_assets, pipeline and

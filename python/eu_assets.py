@@ -44,6 +44,7 @@ EU_ROAD_PREFABS: Dict[str, str] = {
     "TinyRoad":   "EU_Alley",
     "Alley":      "EU_Alley",
     "Pathway":    "EU_PedestrianPath",
+    "BikePath":   "EU_BikePath",
 }
 
 # Generic CS2 railway type → European-theme track prefab identifier.

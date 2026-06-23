@@ -144,6 +144,37 @@ class TestParseRoads:
 
         assert parser.parse_roads(result)[0]["type"] == "alley"
 
+    def test_bike_lane_tag(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(112, nodes, {"highway": "secondary", "cycleway:right": "lane"})
+        result = _mock_result(ways=[way])
+        assert parser.parse_roads(result)[0]["bike_lane"] == "lane"
+
+    def test_bike_track_beats_lane(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(113, nodes, {"highway": "primary",
+                                     "cycleway:left": "lane", "cycleway:right": "track"})
+        result = _mock_result(ways=[way])
+        assert parser.parse_roads(result)[0]["bike_lane"] == "track"
+
+    def test_no_bike_lane(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(114, nodes, {"highway": "residential"})
+        result = _mock_result(ways=[way])
+        assert parser.parse_roads(result)[0]["bike_lane"] == "none"
+
+    def test_embedded_tram(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(115, nodes, {"highway": "secondary", "embedded_rails": "tram"})
+        result = _mock_result(ways=[way])
+        assert parser.parse_roads(result)[0]["tram"] is True
+
+    def test_dedicated_cycleway_type(self, parser):
+        nodes = _make_way_nodes([(0.0, 0.0), (1.0, 1.0)])
+        way = _mock_way(116, nodes, {"highway": "cycleway", "name": "Fietspad"})
+        result = _mock_result(ways=[way])
+        assert parser.parse_roads(result)[0]["type"] == "cycleway"
+
 
 class TestNameTypeHints:
     def test_dutch_footpath(self, parser):

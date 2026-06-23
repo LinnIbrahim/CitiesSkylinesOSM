@@ -63,6 +63,11 @@ def main():
         help="Douglas-Peucker simplification tolerance in metres (0 = no simplification)"
     )
     parser.add_argument(
+        "--min-waterway-width", type=float, default=0.0,
+        help="Drop linear waterways narrower than this many metres (e.g. 2.0 "
+             "strips drainage ditches so the map isn't all rivers). 0 = keep all."
+    )
+    parser.add_argument(
         "--theme", type=str, default="european",
         help="Asset theme to apply: 'european' (default) or 'none' for vanilla."
     )
@@ -153,6 +158,7 @@ def main():
         fetch_elevation=not args.no_elevation,
         simplify_tolerance=args.simplify_tolerance,
         chunk_size_m=args.chunk_size,
+        min_waterway_width=args.min_waterway_width,
         fare_overrides=fare_overrides,
         output_dir="../data/processed",
         fetcher=fetcher,

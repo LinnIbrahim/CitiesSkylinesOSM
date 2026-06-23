@@ -183,7 +183,7 @@ class OSMFetcher:
         query = f"""
         [out:json][timeout:180];
         (
-          way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|service"]({bbox_str});
+          way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|service|living_street|cycleway"]({bbox_str});
         );
         out body;
         >;

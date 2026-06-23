@@ -29,6 +29,7 @@ def generate_city_data(
     fetch_elevation: bool = True,
     simplify_tolerance: float = 2.0,
     chunk_size_m: float = 5_000.0,
+    min_waterway_width: float = 0.0,
     fare_overrides: Optional[Dict[str, Dict]] = None,
     output_dir: str = "../data/processed",
     fetcher: Optional[OSMFetcher] = None,
@@ -136,7 +137,8 @@ def generate_city_data(
     if "railways" in parsed:
         cs2_data["railways"] = converter.convert_railways(parsed["railways"])
     if "waterways" in parsed:
-        cs2_data["waterways"] = converter.convert_waterways(parsed["waterways"])
+        cs2_data["waterways"] = converter.convert_waterways(
+            parsed["waterways"], min_width=min_waterway_width)
     if "transit" in parsed:
         cs2_data["transit"] = converter.convert_transit(parsed["transit"])
     if "buildings" in parsed:

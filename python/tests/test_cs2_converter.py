@@ -245,6 +245,28 @@ class TestClassifyRoad:
         assert converter.classify_road(_road("motorway", 3))["utilities"] is False
         assert converter.classify_road(_road("footway", 1))["utilities"] is False
 
+    def test_dedicated_cycleway_is_bikepath(self, converter):
+        out = converter.classify_road(_road("cycleway", 1))
+        assert out["type"] == "BikePath"
+        assert out["category"] == "bike"
+        assert out["utilities"] is False
+
+    def test_bike_lane_emitted(self, converter):
+        out = converter.convert_roads([_road("secondary", 4, bike_lane="lane")])
+        assert out[0]["bike_lane"] == "lane"
+
+    def test_no_bike_lane_field_when_none(self, converter):
+        out = converter.convert_roads([_road("secondary", 4, bike_lane="none")])
+        assert "bike_lane" not in out[0]
+
+    def test_tram_road_flag(self, converter):
+        out = converter.convert_roads([_road("secondary", 4, tram=True)])
+        assert out[0]["tram"] is True
+
+    def test_no_tram_field_by_default(self, converter):
+        out = converter.convert_roads([_road("secondary", 4)])
+        assert "tram" not in out[0]
+
 
 # ---------------------------------------------------------------
 # CS2Converter.convert_railways
@@ -333,6 +355,43 @@ class TestConvertWaterways:
         cs2 = converter.convert_waterways(wws)
         assert len(cs2) == 1
         assert cs2[0]["isArea"] is True
+        assert cs2[0]["depth"] == converter.WATERWAY_DEPTH_M["Lake"]
+
+    def test_explicit_width_and_depth(self, converter):
+        wws = [{"id": 22, "type": "river", "name": "R", "is_area": False,
+                "width": 25.0, "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+                "geometry": None}]
+        cs2 = converter.convert_waterways(wws)
+        assert cs2[0]["width"] == 25.0
+        assert cs2[0]["depth"] == converter.WATERWAY_DEPTH_M["River"]
+
+    def test_default_width_when_missing(self, converter):
+        wws = [{"id": 23, "type": "canal", "name": "C", "is_area": False,
+                "width": None, "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+                "geometry": None}]
+        cs2 = converter.convert_waterways(wws)
+        assert cs2[0]["width"] == converter.WATERWAY_WIDTH_M["Canal"]
+
+    def test_min_width_filters_ditches(self, converter):
+        wws = [
+            {"id": 24, "type": "ditch", "name": "", "is_area": False,
+             "width": None, "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+             "geometry": None},                                   # Drain ~1.5 m
+            {"id": 25, "type": "river", "name": "", "is_area": False,
+             "width": None, "coordinates": [(7.42, 43.73), (7.43, 43.74)],
+             "geometry": None},                                   # River ~14 m
+        ]
+        cs2 = converter.convert_waterways(wws, min_width=2.0)
+        types = [w["type"] for w in cs2]
+        assert "Drain" not in types and "River" in types
+
+    def test_min_width_keeps_areas(self, converter):
+        coords = [(7.42, 43.73), (7.43, 43.73), (7.43, 43.74),
+                  (7.42, 43.74), (7.42, 43.73)]
+        wws = [{"id": 26, "type": "water", "name": "Lake", "is_area": True,
+                "width": None, "coordinates": coords, "geometry": None}]
+        # Areas have no width, so the filter must not drop them.
+        assert len(converter.convert_waterways(wws, min_width=5.0)) == 1
 
 
 # ---------------------------------------------------------------

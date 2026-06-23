@@ -54,10 +54,12 @@ class OSMParser:
             "tertiary":   1,
             "residential":0,
             "service":    0,
-            "alley":      0,
-            "footway":    0,
-            "path":       0,
-            "pedestrian": 0,
+            "alley":        0,
+            "footway":      0,
+            "path":         0,
+            "pedestrian":   0,
+            "cycleway":     0,
+            "living_street":0,
         }
 
     # ------------------------------------------------------------------
@@ -88,6 +90,8 @@ class OSMParser:
                 "width_m":     self._estimate_width(way.tags, road_type, lanes),
                 "oneway":      way.tags.get("oneway") == "yes",
                 "maxspeed":    way.tags.get("maxspeed", ""),
+                "bike_lane":   self._parse_bike_lane(way.tags),
+                "tram":        self._has_embedded_tram(way.tags),
                 "coordinates": coords,
                 "geometry":    LineString(self._dedup_coords(coords)),
             })
@@ -147,6 +151,27 @@ class OSMParser:
         if road_type in ("motorway", "trunk"):
             width += 6.0  # ~3 m hard shoulder each side
         return round(width, 1)
+
+    def _parse_bike_lane(self, tags: dict) -> str:
+        """
+        Classify on-road cycle infrastructure from cycleway tags →
+        "track" (separated), "lane" (painted), "shared", or "none".
+        Dedicated cycle paths are handled separately (highway=cycleway).
+        """
+        vals = [tags.get(k, "") for k in
+                ("cycleway", "cycleway:both", "cycleway:left", "cycleway:right")]
+        if any(v in ("track", "opposite_track") for v in vals):
+            return "track"
+        if any(v in ("lane", "buffered_lane", "opposite_lane") for v in vals):
+            return "lane"
+        if any(v == "shared_lane" for v in vals):
+            return "shared"
+        return "none"
+
+    def _has_embedded_tram(self, tags: dict) -> bool:
+        """True when a road carries tram rails (→ a CS2 tram-upgraded road)."""
+        return (tags.get("embedded_rails") in ("tram", "yes")
+                or tags.get("tram") == "yes")
 
     # ------------------------------------------------------------------
     # Railways

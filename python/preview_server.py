@@ -303,6 +303,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 // Data is injected by the server at /api/geojson
 let DATA = null;
 let map, layerGroups = {}, boundsRect;
+let featuresByLayer = {}, currentLayer = null;
 
 const LAYER_CONFIG = {
     roads:         { color: '#3498db', weight: 2.5, label: 'Roads',     swatch: 'line' },
@@ -315,6 +316,14 @@ const LAYER_CONFIG = {
 };
 
 const OC_COLORS = { Highway: '#c0392b', Train: '#2c3e50', Ship: '#2980b9' };
+
+const BLDG_COLORS = {
+    'ResidentialZone_low':    '#a8e6a3', 'ResidentialZone_medium': '#4caf50', 'ResidentialZone_high':   '#1b5e20',
+    'CommercialZone_low':     '#90caf9', 'CommercialZone_medium':  '#2196f3', 'CommercialZone_high':    '#0d47a1',
+    'IndustrialZone_low':     '#ffcc80', 'IndustrialZone_medium':  '#ff9800', 'IndustrialZone_high':    '#e65100',
+    'OfficeZone_low':         '#ce93d8', 'OfficeZone_medium':      '#9c27b0', 'OfficeZone_high':        '#4a148c',
+    'CivicBuilding_low':      '#ef9a9a', 'CivicBuilding_medium':   '#e53935', 'CivicBuilding_high':     '#b71c1c',
+};
 
 const ROAD_COLORS = {
     Highway:   '#c0392b',
@@ -390,94 +399,16 @@ function render() {
     statsHTML += `<div class="stat"><span class="label">Routes</span><span class="value">${(DATA._routes || []).length}</span></div>`;
     statsDiv.innerHTML = statsHTML;
 
-    // Create layer groups
-    Object.keys(LAYER_CONFIG).forEach(key => {
-        layerGroups[key] = L.layerGroup().addTo(map);
-    });
-
-    // Add features to layers
+    // Index features by layer. Leaflet objects are built lazily, only for the
+    // layer currently selected, so huge maps stay responsive.
+    featuresByLayer = {};
     DATA.features.forEach(f => {
-        const layer = f.properties.layer;
-        const geom = f.geometry;
-        let leafletLayer;
-
-        if (geom.type === 'Point') {
-            const [lon, lat] = geom.coordinates;
-            if (layer === 'outside_connections') {
-                const c = OC_COLORS[f.properties.oc_type] || '#111';
-                leafletLayer = L.circleMarker([lat, lon], {
-                    radius: 9, color: '#111', fillColor: c,
-                    fillOpacity: 0.95, weight: 2,
-                });
-            } else {
-                const stopType = f.properties.stop_type || 'stop';
-                const color = STOP_COLORS[stopType] || STOP_COLORS.stop;
-                leafletLayer = L.circleMarker([lat, lon], {
-                    radius: 5, color: color, fillColor: color,
-                    fillOpacity: 0.8, weight: 1,
-                });
-            }
-        } else if (geom.type === 'LineString') {
-            const coords = geom.coordinates.map(c => [c[1], c[0]]);
-            let color, weight;
-            if (layer === 'roads') {
-                color = ROAD_COLORS[f.properties.cs2_type] || '#3498db';
-                weight = f.properties.priority >= 3 ? 4 : f.properties.priority >= 1 ? 2.5 : 1.5;
-            } else if (layer === 'railways') {
-                color = '#e67e22';
-                weight = 3;
-            } else {
-                color = '#2980b9';
-                weight = 2;
-            }
-            leafletLayer = L.polyline(coords, { color, weight, opacity: 0.8 });
-        } else if (geom.type === 'Polygon') {
-            const coords = geom.coordinates[0].map(c => [c[1], c[0]]);
-            const cfg = LAYER_CONFIG[layer] || {};
-            let fillColor = cfg.color;
-            if (layer === 'buildings') {
-                // Color by zone + density for clear visual differentiation
-                const density = f.properties.density || 'low';
-                const zone = f.properties.zone || '';
-                const BLDG_COLORS = {
-                    // Residential: green spectrum (light→dark by density)
-                    'ResidentialZone_low':    '#a8e6a3',
-                    'ResidentialZone_medium': '#4caf50',
-                    'ResidentialZone_high':   '#1b5e20',
-                    // Commercial: blue spectrum
-                    'CommercialZone_low':     '#90caf9',
-                    'CommercialZone_medium':  '#2196f3',
-                    'CommercialZone_high':    '#0d47a1',
-                    // Industrial: orange spectrum
-                    'IndustrialZone_low':     '#ffcc80',
-                    'IndustrialZone_medium':  '#ff9800',
-                    'IndustrialZone_high':    '#e65100',
-                    // Office: purple spectrum
-                    'OfficeZone_low':         '#ce93d8',
-                    'OfficeZone_medium':      '#9c27b0',
-                    'OfficeZone_high':        '#4a148c',
-                    // Civic: red
-                    'CivicBuilding_low':      '#ef9a9a',
-                    'CivicBuilding_medium':   '#e53935',
-                    'CivicBuilding_high':     '#b71c1c',
-                };
-                fillColor = BLDG_COLORS[zone + '_' + density] || '#9e9e9e';
-            }
-            leafletLayer = L.polygon(coords, {
-                color: fillColor,
-                fillColor: fillColor,
-                fillOpacity: layer === 'waterways' ? 0.4 : 0.35,
-                weight: 1,
-            });
-        }
-
-        if (leafletLayer) {
-            leafletLayer.on('click', () => showInfo(f.properties));
-            layerGroups[layer].addLayer(leafletLayer);
-        }
+        const k = f.properties.layer;
+        (featuresByLayer[k] = featuresByLayer[k] || []).push(f);
     });
 
-    // CS2 map bounds rectangle
+    // CS2 map bounds rectangle — cheap, always shown.
+    layerGroups.cs2_bounds = L.layerGroup().addTo(map);
     if (bbox.south) {
         const mapSize = coordSys.cs2_map_size_m || 57344;
         const half = mapSize / 2;
@@ -485,31 +416,49 @@ function render() {
         const lat_c = centre.lat || 0, lon_c = centre.lon || 0;
         const m_per_lat = 111320;
         const m_per_lon = 111320 * Math.cos(lat_c * Math.PI / 180);
-
-        const s = lat_c - half / m_per_lat;
-        const n = lat_c + half / m_per_lat;
-        const w = lon_c - half / m_per_lon;
-        const e = lon_c + half / m_per_lon;
-
-        const rect = L.rectangle([[s, w], [n, e]], {
+        const s = lat_c - half / m_per_lat, n = lat_c + half / m_per_lat;
+        const w = lon_c - half / m_per_lon, e = lon_c + half / m_per_lon;
+        L.rectangle([[s, w], [n, e]], {
             color: '#e74c3c', weight: 2, dashArray: '8,6',
             fill: false, interactive: false,
-        });
-        layerGroups.cs2_bounds.addLayer(rect);
+        }).addTo(layerGroups.cs2_bounds);
     }
 
-    // Layer toggles
+    // Layer selector — one data layer at a time keeps large maps responsive.
+    const dataLayers = Object.keys(LAYER_CONFIG).filter(
+        k => k !== 'cs2_bounds' && (featuresByLayer[k] || []).length);
     const layersDiv = document.getElementById('layers');
-    let layersHTML = '';
-    Object.entries(LAYER_CONFIG).forEach(([key, cfg]) => {
+    let layersHTML = '<div style="font-size:11px;color:#888;margin-bottom:4px">'
+        + 'Pick one layer at a time (faster on big maps)</div>';
+    dataLayers.forEach(key => {
+        const cfg = LAYER_CONFIG[key] || {};
         const swatchClass = cfg.swatch === 'circle' ? 'circle' : cfg.swatch === 'polygon' ? 'polygon' : '';
+        const n = (featuresByLayer[key] || []).length;
         layersHTML += `<div class="layer-toggle">
-            <input type="checkbox" id="toggle-${key}" checked onchange="toggleLayer('${key}', this.checked)">
+            <input type="radio" name="layersel" id="sel-${key}" value="${key}" onchange="showOnly('${key}')">
             <span class="legend-swatch ${swatchClass}" style="background:${cfg.color}"></span>
-            <label for="toggle-${key}">${cfg.label}</label>
+            <label for="sel-${key}">${cfg.label} <span style="color:#999">(${n.toLocaleString()})</span></label>
         </div>`;
     });
+    layersHTML += `<div class="layer-toggle">
+        <input type="radio" name="layersel" id="sel-__all__" value="__all__" onchange="showAll()">
+        <span class="legend-swatch" style="background:#666"></span>
+        <label for="sel-__all__">All layers <span style="color:#c0392b">(slow)</span></label>
+    </div>
+    <div class="layer-toggle" style="margin-top:6px">
+        <input type="checkbox" id="toggle-cs2_bounds" checked onchange="toggleLayer('cs2_bounds', this.checked)">
+        <span class="legend-swatch" style="background:#e74c3c"></span>
+        <label for="toggle-cs2_bounds">CS2 map edge</label>
+    </div>`;
     layersDiv.innerHTML = layersHTML;
+
+    // Default to a single layer (roads if present).
+    const def = dataLayers.includes('roads') ? 'roads' : dataLayers[0];
+    if (def) {
+        const r = document.getElementById('sel-' + def);
+        if (r) r.checked = true;
+        showOnly(def);
+    }
 
     // Routes info
     const routesDiv = document.getElementById('routes-info');
@@ -556,6 +505,80 @@ function render() {
 function toggleLayer(key, visible) {
     if (visible) map.addLayer(layerGroups[key]);
     else map.removeLayer(layerGroups[key]);
+}
+
+// Build a single Leaflet layer for one feature (or null).
+function buildFeature(f) {
+    const layer = f.properties.layer;
+    const geom = f.geometry;
+    let leafletLayer;
+
+    if (geom.type === 'Point') {
+        const [lon, lat] = geom.coordinates;
+        if (layer === 'outside_connections') {
+            const c = OC_COLORS[f.properties.oc_type] || '#111';
+            leafletLayer = L.circleMarker([lat, lon], {
+                radius: 9, color: '#111', fillColor: c, fillOpacity: 0.95, weight: 2 });
+        } else {
+            const color = STOP_COLORS[f.properties.stop_type || 'stop'] || STOP_COLORS.stop;
+            leafletLayer = L.circleMarker([lat, lon], {
+                radius: 5, color: color, fillColor: color, fillOpacity: 0.8, weight: 1 });
+        }
+    } else if (geom.type === 'LineString') {
+        const coords = geom.coordinates.map(c => [c[1], c[0]]);
+        let color = '#2980b9', weight = 2;
+        if (layer === 'roads') {
+            color = ROAD_COLORS[f.properties.cs2_type] || '#3498db';
+            weight = f.properties.priority >= 3 ? 4 : f.properties.priority >= 1 ? 2.5 : 1.5;
+        } else if (layer === 'railways') {
+            color = '#e67e22'; weight = 3;
+        }
+        leafletLayer = L.polyline(coords, { color, weight, opacity: 0.8 });
+    } else if (geom.type === 'Polygon') {
+        const coords = geom.coordinates[0].map(c => [c[1], c[0]]);
+        let fillColor = (LAYER_CONFIG[layer] || {}).color;
+        if (layer === 'buildings') {
+            const key = (f.properties.zone || '') + '_' + (f.properties.density || 'low');
+            fillColor = BLDG_COLORS[key] || '#9e9e9e';
+        }
+        leafletLayer = L.polygon(coords, {
+            color: fillColor, fillColor: fillColor,
+            fillOpacity: layer === 'waterways' ? 0.4 : 0.35, weight: 1 });
+    }
+
+    if (leafletLayer) leafletLayer.on('click', () => showInfo(f.properties));
+    return leafletLayer;
+}
+
+// Build (and cache) the layer group for one data layer.
+function buildLayer(key) {
+    if (layerGroups[key]) return layerGroups[key];
+    const grp = L.layerGroup();
+    (featuresByLayer[key] || []).forEach(f => {
+        const lyr = buildFeature(f);
+        if (lyr) grp.addLayer(lyr);
+    });
+    layerGroups[key] = grp;
+    return grp;
+}
+
+function _removeDataLayers() {
+    Object.keys(featuresByLayer).forEach(k => {
+        if (layerGroups[k]) map.removeLayer(layerGroups[k]);
+    });
+}
+
+// Show exactly one data layer.
+function showOnly(key) {
+    _removeDataLayers();
+    map.addLayer(buildLayer(key));
+    currentLayer = key;
+}
+
+// Show every data layer (heavy on big maps).
+function showAll() {
+    Object.keys(featuresByLayer).forEach(k => map.addLayer(buildLayer(k)));
+    currentLayer = '__all__';
 }
 
 function showInfo(props) {

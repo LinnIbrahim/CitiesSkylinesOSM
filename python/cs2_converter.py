@@ -323,8 +323,9 @@ class CS2Converter:
     }
 
     # Pedestrian / non-vehicle OSM classes route to a CS2 pathway, not a road.
+    # (cycleway is handled separately → a dedicated CS2 bike path.)
     PEDESTRIAN_OSM_TYPES = {
-        "footway", "path", "pedestrian", "steps", "cycleway",
+        "footway", "path", "pedestrian", "steps",
         "bridleway", "corridor", "track",
     }
 
@@ -374,6 +375,17 @@ class CS2Converter:
         "coastline":  "Coastline",
         "water":      "Lake",        # natural=water areas
         "reservoir":  "Reservoir",
+    }
+
+    # Default surface width (m) per CS2 water type when OSM has no width tag.
+    WATERWAY_WIDTH_M = {
+        "River": 14.0, "Canal": 12.0, "Stream": 3.0, "Drain": 1.5,
+        "Coastline": 0.0,
+    }
+    # Default water depth (m) per CS2 water type — feeds the in-game water sim.
+    WATERWAY_DEPTH_M = {
+        "River": 4.0, "Canal": 3.0, "Stream": 1.0, "Drain": 0.5,
+        "Lake": 3.0, "Reservoir": 4.0, "Coastline": 5.0,
     }
 
     def __init__(
@@ -439,6 +451,12 @@ class CS2Converter:
                     "priority":      road["priority"],
                     "utilities":     klass["utilities"],
                 }
+                # On-road cycle lane → road's bike-lane variant in CS2.
+                if road.get("bike_lane", "none") != "none":
+                    entry["bike_lane"] = road["bike_lane"]
+                # Tram rails embedded in the road → tram-upgraded road in CS2.
+                if road.get("tram"):
+                    entry["tram"] = True
                 if klass["clamped"]:
                     entry["clamped"] = True
                     entry["original_lanes"] = klass["original_lanes"]
@@ -473,8 +491,11 @@ class CS2Converter:
         lanes    = road.get("lanes", 2)
         original = lanes
 
+        # Dedicated cycle paths become a CS2 bike path.
+        if osm_type == "cycleway":
+            cs2_type, category, eff, clamped = "BikePath", "bike", 1, False
         # Pedestrian / non-vehicle ways become CS2 pathways.
-        if osm_type in self.PEDESTRIAN_OSM_TYPES:
+        elif osm_type in self.PEDESTRIAN_OSM_TYPES:
             cs2_type, category, eff, clamped = "Pathway", "pedestrian", 1, False
         elif osm_type == "alley":
             cs2_type, category, eff, clamped = "Alley", "vehicle", 1, False
@@ -551,19 +572,25 @@ class CS2Converter:
     # ------------------------------------------------------------------
 
     def convert_waterways(
-        self, waterways: List[Dict[str, Any]]
+        self, waterways: List[Dict[str, Any]], min_width: float = 0.0
     ) -> List[Dict[str, Any]]:
         """
         Convert waterway features (rivers, canals, lakes …) to CS2 format.
 
         Linear waterways (rivers, streams, canals) → list of points.
         Area waterways  (lakes, reservoirs)         → closed polygon points.
+
+        Each waterway gets a width (explicit OSM width, else a per-type default)
+        and a depth for the in-game water simulation. Linear waterways narrower
+        than ``min_width`` are dropped — handy for stripping the dense mesh of
+        agricultural drainage ditches so the map isn't all "rivers".
         """
         cs2_waterways = []
 
         for ww in waterways:
             cs2_type = self.WATERWAY_TYPE_MAP.get(ww["type"], "Stream")
             is_area  = ww.get("is_area", False)
+            depth    = self.WATERWAY_DEPTH_M.get(cs2_type, 2.0)
 
             if is_area:
                 points = self.transformer.clip_and_convert_polygon(
@@ -578,8 +605,12 @@ class CS2Converter:
                     "isArea": True,
                     "points": points,
                     "width":  None,
+                    "depth":  depth,
                 })
             else:
+                width = ww.get("width") or self.WATERWAY_WIDTH_M.get(cs2_type, 2.0)
+                if width < min_width:
+                    continue  # too narrow (e.g. a ditch) — skip
                 segments = self.transformer.clip_and_convert_line(
                     ww["coordinates"], self.elevations
                 )
@@ -595,7 +626,8 @@ class CS2Converter:
                         "name":   ww["name"],
                         "isArea": False,
                         "points": seg,
-                        "width":  ww.get("width"),
+                        "width":  round(width, 1),
+                        "depth":  depth,
                     })
 
         return cs2_waterways

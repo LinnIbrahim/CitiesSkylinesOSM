@@ -36,6 +36,12 @@ namespace DynamicCityLoader
         [JsonProperty("speedLimit")]     public int SpeedLimit { get; set; }
         [JsonProperty("priority")]       public int Priority { get; set; }
 
+        // On-road cycle infrastructure: "lane" | "track" | "shared" (absent if
+        // none) → pick the road's bike-lane variant. Tram = rails embedded in
+        // the road → upgrade to a tram road.
+        [JsonProperty("bike_lane")]      public string BikeLane { get; set; }
+        [JsonProperty("tram")]           public bool Tram { get; set; }
+
         // True when the CS2 type auto-carries water/sewage/electricity (all
         // surface roads). False for highways/pathways — zoning served only by
         // those needs standalone utilities placed alongside.
@@ -73,6 +79,8 @@ namespace DynamicCityLoader
         [JsonProperty("name")]   public string Name { get; set; }
         [JsonProperty("isArea")] public bool IsArea { get; set; }
         [JsonProperty("points")] public List<Point3> Points { get; set; }
+        [JsonProperty("width")]  public float? Width { get; set; }  // null for areas
+        [JsonProperty("depth")]  public float Depth { get; set; }   // metres, for water sim
     }
 
     public class Building
